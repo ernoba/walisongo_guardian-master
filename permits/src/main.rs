@@ -3,13 +3,11 @@ use std::os::windows::process::CommandExt;
 use std::fs;
 use std::env;
 use std::path::PathBuf;
-use std::io::{self, Write}; // Untuk input pause
+use std::io::{self, Write}; 
 use winreg::enums::*;
 use winreg::RegKey;
 
-const EXE_NAME: &str = "WinSysHelper.exe";
-const DATA_DIR: &str = "WinHealthData";
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+use config::config;
 
 fn apply_registry_exclusion(target_path: &str) -> std::io::Result<()> {
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);

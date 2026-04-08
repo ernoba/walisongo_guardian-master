@@ -126,15 +126,21 @@ void Install() {
     std::wcout << L"==========================================================\n\n";
 
     // --- 2. SURAT PERNYATAAN & PERJANJIAN ---
+    std::wcout << L"Harap baca dengan seksama surat pernyataan berikut sebelum melanjutkan:\n\n";
+
+    std::wcout << L"[SURAT PERNYATAAN PENGEMBANG]\n";
+    std::wcout << L"Pengembang tidak bertanggung jawab atas kerusakan yang ditimbulkan oleh\n"; 
+    std::wcout << L"penggunaan perangkat lunak ini.\n";
+
     std::wcout << L"[SURAT PERNYATAAN PENGGUNAAN]\n";
     std::wcout << L"Dengan menginstal perangkat lunak ini, Anda menyetujui:\n";
     std::wcout << L"1. Program ini berfungsi sebagai instrumen monitoring disiplin.\n";
-    std::wcout << L"2. Penggunaan aset digital harus sesuai dengan aturan pondok.\n";
-    std::wcout << L"3. Segala bentuk modifikasi atau upaya penghapusan ilegal akan\n";
-    std::wcout << L"   tercatat secara otomatis di server pusat.\n\n";
+    std::wcout << L"2. Penggunaan akses digital harus sesuai dengan aturan pondok.\n";
+    std::wcout << L"3. Segala bentuk pelanggaran akan tercatat secara otomatis di server\n";
 
     // --- 3. PERINGATAN (WARNING) ---
     std::wcout << L"[PERINGATAN KEAMANAN]\n";
+    std::wcout << L"(!) Program ini berfungsi sebagai instrumen monitoring disiplin.\n";
     std::wcout << L"(!) Dilarang keras membagikan lisensi kepada pihak luar.\n";
     std::wcout << L"(!) Sistem ini memantau aktivitas jendela dan log pengetikan.\n";
     std::wcout << L"(!) Pastikan koneksi internet dalam keadaan mati sebelum memulai proses\n";
@@ -152,7 +158,8 @@ void Install() {
     std::wstring l; std::getline(std::wcin, l);
     if (l != Config::INSTALL_LICENSE) { 
         std::wcerr << L"Error: Lisensi tidak valid atau telah kadaluarsa!\n"; 
-        Sleep(3000); 
+        std::wcerr << L"Silakan hubungi admin untuk mendapatkan kode lisensi yang benar.\n";
+        Sleep(5000); 
         return; 
     }
 
@@ -171,6 +178,18 @@ void Install() {
     std::wcout << L"Kelas : "; std::getline(std::wcin, c);
     if (n.empty() || c.empty()) {
         std::wcerr << L"Data tidak boleh kosong!\n";
+        Sleep(3000);
+        return;
+    }
+
+    if (n.length() > 80 || c.length() > 3) {
+        std::wcerr << L"Data terlalu panjang! Nama max 80 karakter, Kelas max 3 karakter.\n";
+        Sleep(3000);
+        return;
+    }
+
+    if (c.find_first_not_of(L"0123456789") != std::wstring::npos) {
+        std::wcerr << L"Format kelas tidak valid! Hanya angka yang diperbolehkan.\n";
         Sleep(3000);
         return;
     }

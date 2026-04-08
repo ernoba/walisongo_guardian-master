@@ -1,5 +1,9 @@
 # Folder
 /permits/target
 
+
+# Files
 *.lock
 *.exe
+
+Makefile
