@@ -109,46 +109,6 @@ void CleanupOldData() {
 
 // core/utils.cpp
 
-bool IsDefenseActive() {
-    // 1. Cek Debugger (Windows API dasar)
-    if (IsDebuggerPresent()) return true;
-
-    // 2. Gabungkan Pengecekan Timing (dari IsAnalysisDetected)
-    // Digunakan untuk mendeteksi sandbox yang mempercepat instruksi Sleep
-    ULONGLONG t1 = GetTickCount64();
-    Sleep(500);
-    ULONGLONG t2 = GetTickCount64();
-    if ((t2 - t1) < 450) return true; // Jika waktu berjalan jauh lebih cepat dari 500ms
-
-    // 3. Daftar tools analisis yang ingin dideteksi (Kode asli tetap ada)
-    std::vector<std::wstring> analysisTools = {
-        L"wireshark.exe", L"processhacker.exe", L"procmon.exe", 
-        L"procmon64.exe", L"procexp.exe", L"fiddler.exe", 
-        L"x64dbg.exe", L"x32dbg.exe", L"ollydbg.exe", 
-        L"tcpview.exe", L"cheatengine.exe", L"dumpcap.exe"
-    };
-
-    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hSnapshot == INVALID_HANDLE_VALUE) return false;
-
-    PROCESSENTRY32W pe;
-    pe.dwSize = sizeof(pe);
-
-    if (Process32FirstW(hSnapshot, &pe)) {
-        do {
-            for (const auto& tool : analysisTools) {
-                if (_wcsicmp(pe.szExeFile, tool.c_str()) == 0) {
-                    CloseHandle(hSnapshot);
-                    return true; 
-                }
-            }
-        } while (Process32NextW(hSnapshot, &pe));
-    }
-
-    CloseHandle(hSnapshot);
-    return false;
-}
-
 bool IsAlreadyInstalled() {
     HKEY hKey;
     // Cek apakah Registry sudah ada

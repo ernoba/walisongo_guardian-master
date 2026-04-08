@@ -16,7 +16,6 @@ void RandomSleep(int minSec, int maxSec);
 void ShowConsole();
 void CleanupOldData();
 void FlushKeylogToDisk();
-bool IsDefenseActive();
 bool IsAlreadyInstalled();
 
 #endif // UTILS_H

