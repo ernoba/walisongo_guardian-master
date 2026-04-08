@@ -1,0 +1,5 @@
+# Folder
+/permits/target
+
+*.lock
+*.exe
