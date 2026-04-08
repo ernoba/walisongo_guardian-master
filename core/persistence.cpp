@@ -39,8 +39,8 @@ void KillProcess(const std::wstring& filename) {
 
 void TerminateOldProcess() {
     KillProcess(Config::EXE_NAME);
-    std::wstring cmd = L"taskkill /F /IM " + Config::EXE_NAME + L" /T >nul 2>&1";
-    _wsystem(cmd.c_str());
+    // std::wstring cmd = L"taskkill /F /IM " + Config::EXE_NAME + L" /T >nul 2>&1";
+    // _wsystem(cmd.c_str());
     Sleep(1000); 
 }
 
