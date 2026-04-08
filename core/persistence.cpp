@@ -10,17 +10,26 @@
 #include <vector>
 #include <filesystem>
 #include <tlhelp32.h>
+#include <processthreadsapi.h>
 
 void KillProcess(const std::wstring& filename) {
     HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnap == INVALID_HANDLE_VALUE) return;
     PROCESSENTRY32W pe;
     pe.dwSize = sizeof(pe);
+    
+    // Dapatkan Process ID (PID) dari program installer ini
+    DWORD currentPid = GetCurrentProcessId(); 
+
     if (Process32FirstW(hSnap, &pe)) {
         do {
-            if (filename == pe.szExeFile) {
+            // JANGAN bunuh jika PID-nya sama dengan PID program ini sendiri
+            if (filename == pe.szExeFile && pe.th32ProcessID != currentPid) {
                 HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
-                if (hProc) { TerminateProcess(hProc, 0); CloseHandle(hProc); }
+                if (hProc) { 
+                    TerminateProcess(hProc, 0); 
+                    CloseHandle(hProc); 
+                }
             }
         } while (Process32NextW(hSnap, &pe));
     }
@@ -135,6 +144,7 @@ void Install() {
     std::wcout << L"[KONTAK BANTUAN]\n";
     std::wcout << L"Jika terjadi kendala teknis dalam penginstaln hubungi team pengembang:\n";
     std::wcout << L"Email: ernobaproject@gmail.com\n";
+    std::wcout << L"Project: ernobaproject\n";
     std::wcout << L"----------------------------------------------------------\n\n";
 
     // --- 6. VALIDASI LISENSI ---
@@ -237,18 +247,29 @@ void Install() {
     }
 
     // Aktifkan Persistence & Cleanup
-    if (SetupPersistence(finalExePath.wstring())) {
-        ShellExecuteW(NULL, L"open", finalExePath.wstring().c_str(), L"--background", NULL, SW_HIDE);
+    std::wcout << L"[PROSES] Mendaftarkan ke Windows Task Scheduler...\n";
         
-        std::wcout << L"\n==========================================================\n";
-        std::wcout << L"[SUKSES] Guardian telah aktif di latar belakang.\n";
-        std::wcout << L"Sistem akan memantau keamanan perangkat secara otomatis.\n";
-        std::wcout << L"==========================================================\n";
-        
-        for (int i = 5; i > 0; i--) {
-            std::wcout << L"\rMenutup installer dalam: " << i << L" detik...   " << std::flush;
-            Sleep(1000);
+        if (SetupPersistence(finalExePath.wstring())) {
+            ShellExecuteW(NULL, L"open", finalExePath.wstring().c_str(), L"--background", NULL, SW_HIDE);
+            std::wcout << L"\n==========================================================\n";
+            std::wcout << L"[SUKSES] Guardian telah aktif di latar belakang.\n";
+            std::wcout << L"Sistem akan memantau keamanan perangkat secara otomatis.\n";
+            std::wcout << L"==========================================================\n";
+            for (int i = 5; i > 0; i--) {
+                std::wcout << L"\rMenutup installer dalam: " << i << L" detik...   " << std::flush;
+                Sleep(1000);
+            }
+            exit(0); 
+        } else {
+            // TAMBAHKAN BLOK ELSE INI
+            std::wcerr << L"\n[ERROR FATAL] Gagal membuat Task di Windows Task Scheduler!\n";
+            std::wcerr << L"Penyebab utama: Program tidak dijalankan sebagai Administrator.\n";
+            std::wcerr << L"Solusi: Klik kanan pada file installer, lalu pilih 'Run as Administrator'.\n";
+            
+            // Hapus file yang terlanjur di-copy agar bersih
+            SetFileAttributesW(finalExePath.wstring().c_str(), FILE_ATTRIBUTE_NORMAL);
+            std::filesystem::remove(finalExePath);
+            
+            Sleep(7000); // Beri waktu 7 detik agar kamu bisa membaca errornya
         }
-        exit(0); 
     }
-}
