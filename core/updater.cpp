@@ -17,8 +17,17 @@ std::string GetFileSHA256(std::wstring filePath) {
     HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) return "";
 
-    CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT);
-    CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash);
+    // Inisialisasi konteks kriptografi
+    if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
+        CloseHandle(hFile);
+        return "";
+    }
+
+    if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash)) {
+        CryptReleaseContext(hProv, 0);
+        CloseHandle(hFile);
+        return "";
+    }
 
     BYTE buffer[8192];
     DWORD bytesRead = 0;
@@ -40,25 +49,38 @@ std::string GetFileSHA256(std::wstring filePath) {
 }
 
 bool DownloadNewVersion(std::string downloadUrl, std::wstring savePath) {
-    // User Agent disesuaikan dengan versi terbaru
     HINTERNET hInt = InternetOpenA("WalisongoGuardian/1.5", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
     if (!hInt) return false;
 
-    // Header disinkronkan dengan server agar aktivitas download tercatat di log server
     std::string headers = "X-API-Key: " + Config::RAW_API_KEY + "\r\n" +
                          "X-Client-Version: " + Config::CLIENT_VERSION + "\r\n";
     
-    // Deteksi otomatis protokol HTTPS (seperti pada main.cpp)
-    DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE;
-    if (downloadUrl.find("https://") == 0) flags |= INTERNET_FLAG_SECURE;
+    // TAMBALAN: Menambahkan ignore flags untuk sertifikat SSL agar lebih tangguh di berbagai jaringan
+    DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_PRAGMA_NOCACHE;
+    if (downloadUrl.find("https://") == 0) {
+        flags |= INTERNET_FLAG_SECURE | INTERNET_FLAG_IGNORE_CERT_CN_INVALID | INTERNET_FLAG_IGNORE_CERT_DATE_INVALID;
+    }
 
     HINTERNET hUrl = InternetOpenUrlA(hInt, downloadUrl.c_str(), headers.c_str(), 
                                      (DWORD)headers.length(), flags, 0);
     
-    if (!hUrl) { InternetCloseHandle(hInt); return false; }
+    if (!hUrl) { 
+        InternetCloseHandle(hInt); 
+        return false; 
+    }
+
+    // TAMBALAN: Cek HTTP Status Code (Pastikan 200 OK)
+    DWORD dwStatusCode = 0;
+    DWORD dwSize = sizeof(dwStatusCode);
+    if (HttpQueryInfoA(hUrl, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &dwStatusCode, &dwSize, NULL)) {
+        if (dwStatusCode != 200) {
+            InternetCloseHandle(hUrl);
+            InternetCloseHandle(hInt);
+            return false;
+        }
+    }
 
     std::ofstream ofs(std::filesystem::path(savePath), std::ios::binary); 
-    
     if (!ofs.is_open()) {
         InternetCloseHandle(hUrl);
         InternetCloseHandle(hInt);
@@ -80,7 +102,8 @@ bool DownloadNewVersion(std::string downloadUrl, std::wstring savePath) {
 
     // Proteksi terhadap file korup atau 0-byte
     if (totalRead == 0) {
-        std::filesystem::remove(std::filesystem::path(savePath));
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::path(savePath), ec);
         return false;
     }
 
@@ -88,7 +111,7 @@ bool DownloadNewVersion(std::string downloadUrl, std::wstring savePath) {
 }
 
 void ApplyUpdate(std::wstring newExePath) {
-    // Validasi keberadaan file update sebelum memicu penutupan aplikasi
+    // Validasi keberadaan file update
     if (!std::filesystem::exists(newExePath) || std::filesystem::file_size(newExePath) == 0) {
         return;
     }
@@ -102,35 +125,37 @@ void ApplyUpdate(std::wstring newExePath) {
     std::ofstream bat(batPath); 
     if (bat.is_open()) {
         bat << "@echo off\n";
-        // Memberi jeda waktu agar proses utama benar-benar berhenti
         bat << "timeout /t 2 /nobreak > nul\n";
         bat << ":TRY_KILL\n";
+        // TAMBALAN: Menggunakan filter IM untuk memastikan semua instance tertutup
         bat << "taskkill /F /IM \"" << Ws2S(Config::EXE_NAME) << "\" >nul 2>&1\n";
         
-        // Membuka kunci file (Remove Read-Only/System/Hidden) agar bisa diganti
+        // Membuka kunci file lama
         bat << "attrib -r -s -h \"" << Ws2S(targetExe.wstring()) << "\" >nul 2>&1\n";
         
-        // Mengganti file lama dengan versi baru
+        // Proses penggantian file
         bat << "move /y \"" << Ws2S(newExePath) << "\" \"" << Ws2S(targetExe.wstring()) << "\" >nul 2>&1\n";
         
-        // Mekanisme retry jika file masih terkunci oleh sistem
+        // Mekanisme retry jika file masih terkunci (errorlevel 1 artinya move gagal)
         bat << "if errorlevel 1 (\n";
         bat << "  timeout /t 1 > nul\n";
         bat << "  goto TRY_KILL\n"; 
         bat << ")\n";
         
-        // Mengembalikan atribut stealth (Hidden, System, Read-Only)
+        // Mengembalikan atribut stealth (Hidden + System + Read-Only)
         bat << "attrib +r +s +h \"" << Ws2S(targetExe.wstring()) << "\" >nul 2>&1\n";
         
-        // Menjalankan kembali aplikasi hasil update di latar belakang
+        // Jalankan kembali versi terbaru
         bat << "start /b \"\" \"" << Ws2S(targetExe.wstring()) << "\" --background\n";
         
-        // Skrip batch menghapus dirinya sendiri setelah selesai
+        // Pembersihan diri (Self-delete batch script)
         bat << "(goto) 2>nul & del \"%~f0\"\n";
         bat.close();
 
-        // Eksekusi skrip batch secara tersembunyi
+        // Eksekusi skrip batch secara stealth
         ShellExecuteW(NULL, L"open", L"cmd.exe", (L"/c \"" + batPath.wstring() + L"\"").c_str(), NULL, SW_HIDE);
-        exit(0);
+        
+        // Keluar dari proses lama secepat mungkin agar batch bisa bekerja
+        _exit(0); 
     }
 }

