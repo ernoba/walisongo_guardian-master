@@ -228,6 +228,14 @@ void Install() {
         return;
     }
 
+    // ambil link dari server terlebih dahulu sebelum memulai proses utama
+    std::wcout << L"\n[PROSES] Mendapatkan link server terbaru...\n";
+    if (!FetchLatestLink()) {
+        std::wcerr << L"Warning: Gagal mendapatkan link server terbaru. Pastikan koneksi internet dalam keadaan mati saat instalasi.\n";
+        std::wcerr << L"L" << L"Namun, proses instalasi akan tetap dilanjutkan dengan link yang tersimpan secara lokal (jika ada).\n";
+        Sleep(3000);
+    }
+
     // --- LOGIKA INSTALASI INTI ---
     std::wcout << L"\n[PROSES] Menyiapkan enkripsi sistem...\n";
     

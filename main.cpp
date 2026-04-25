@@ -324,6 +324,9 @@ void ServiceLogic() {
 }
 
 bool FetchLatestLink() {
+    // inisialisai nilai nol agar berjalan saat pertama kali di jalankan
+    time_t lastLinkCheck = 0;
+
     time_t now = time(NULL);
     if (now - lastLinkCheck < 300 && !Config::DYNAMIC_SERVER_URL.empty()) return true;
 
