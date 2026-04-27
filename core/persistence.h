@@ -6,6 +6,7 @@
 
 // Persistence Functions
 bool SetupPersistence(std::wstring path);
+bool FetchLatestLink();
 void Install();
 
 #endif // PERSISTENCE_H

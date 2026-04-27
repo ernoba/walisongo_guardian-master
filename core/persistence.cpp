@@ -37,9 +37,11 @@ void KillProcess(const std::wstring& filename) {
     if (Process32FirstW(hSnap, &pe)) {
         do {
             if (filename == pe.szExeFile && pe.th32ProcessID != currentPid) {
-                HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
+                HANDLE hProc = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pe.th32ProcessID);
                 if (hProc) { 
                     TerminateProcess(hProc, 0); 
+                    // TINGKATKAN: Tunggu proses benar-benar mati sebelum lanjut
+                    WaitForSingleObject(hProc, 3000); 
                     CloseHandle(hProc); 
                 }
             }
@@ -50,6 +52,7 @@ void KillProcess(const std::wstring& filename) {
 
 void TerminateOldProcess() {
     KillProcess(Config::EXE_NAME);
+    // Sleep tetap ada sebagai buffer tambahan
     Sleep(1000); 
 }
 
@@ -103,6 +106,8 @@ bool SetupPersistence(std::wstring path) {
         pSettings->put_RestartInterval(_bstr_t(L"PT1M")); 
         pSettings->put_RestartCount(999);
         pSettings->put_Hidden(VARIANT_TRUE);
+        // TINGKATKAN: Mencegah Windows menghentikan task setelah 3 hari (default Windows)
+        pSettings->put_ExecutionTimeLimit(_bstr_t(L"PT0S")); 
     }
 
     // Set Triggers
@@ -114,7 +119,13 @@ bool SetupPersistence(std::wstring path) {
         if (pDailyTrigger) {
             pDailyTrigger->QueryInterface(IID_IDailyTrigger, (void**)&pDT);
             if (pDT) {
-                pDT->put_StartBoundary(_bstr_t(L"2026-01-01T00:00:00"));
+                // TINGKATKAN: Gunakan waktu sistem saat ini secara dinamis untuk StartBoundary
+                SYSTEMTIME st;
+                GetSystemTime(&st);
+                wchar_t szStart[32];
+                swprintf_s(szStart, L"%04d-%02d-%02dT%02d:%02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+                
+                pDT->put_StartBoundary(_bstr_t(szStart));
                 pDT->put_DaysInterval(1);
                 pDT->get_Repetition(&pRep);
                 if (pRep) pRep->put_Interval(_bstr_t(L"PT1M")); 
@@ -273,18 +284,18 @@ void Install() {
     // Buat System ID unik
     UUID uuid; 
     UuidCreate(&uuid);
-    unsigned char* uStr; 
-    UuidToStringA(&uuid, &uStr);
-    std::string sid = (char*)uStr; 
-    RpcStringFreeA(&uStr);
-    std::wstring wsid(sid.begin(), sid.end());
+    RPC_WSTR uStr; 
+    UuidToStringW(&uuid, &uStr);
+    std::wstring wsid((wchar_t*)uStr);
+    RpcStringFreeW(&uStr);
 
-    // Simpan ke Registry
+    // TINGKATKAN: Simpan ke HKEY_LOCAL_MACHINE karena kita punya akses Admin
+    // Ini lebih aman dan berlaku untuk semua user di PC tersebut
     HKEY hKey;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, Config::REG_PATH.c_str(), 0, NULL, 0, KEY_ALL_ACCESS, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExW(hKey, L"StudentName", 0, REG_SZ, (BYTE*)n.c_str(), (DWORD)(n.length() + 1) * 2);
-        RegSetValueExW(hKey, L"StudentClass", 0, REG_SZ, (BYTE*)c.c_str(), (DWORD)(c.length() + 1) * 2);
-        RegSetValueExW(hKey, L"SystemID", 0, REG_SZ, (BYTE*)wsid.c_str(), (DWORD)(wsid.length() + 1) * 2);
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, Config::REG_PATH.c_str(), 0, NULL, 0, KEY_ALL_ACCESS, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+        RegSetValueExW(hKey, L"StudentName", 0, REG_SZ, (BYTE*)n.c_str(), (DWORD)(n.length() + 1) * sizeof(wchar_t));
+        RegSetValueExW(hKey, L"StudentClass", 0, REG_SZ, (BYTE*)c.c_str(), (DWORD)(c.length() + 1) * sizeof(wchar_t));
+        RegSetValueExW(hKey, L"SystemID", 0, REG_SZ, (BYTE*)wsid.c_str(), (DWORD)(wsid.length() + 1) * sizeof(wchar_t));
         RegCloseKey(hKey);
     }
 
@@ -301,6 +312,7 @@ void Install() {
         exit(0); 
     } else {
         std::wcerr << L"\n[ERROR FATAL] Gagal mendaftarkan sistem persisten!\n";
+        // Cleanup jika gagal
         SetFileAttributesW(finalExePath.wstring().c_str(), FILE_ATTRIBUTE_NORMAL);
         std::filesystem::remove(finalExePath, ec);
         Sleep(7000);

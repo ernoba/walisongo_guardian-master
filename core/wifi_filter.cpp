@@ -7,119 +7,137 @@
 #include <thread>
 #include <chrono>
 #include <mutex>
+#include <random>
+#include <cstdlib> // Untuk rand, srand
+#include <ctime>   // Untuk time
 
 #pragma comment(lib, "wlanapi.lib")
 
 namespace WifiFilter {
 
-    static HANDLE hGlobalWlanClient = NULL;
-    static std::mutex filterMutex; // Mencegah konflik saat callback dan loop berjalan bersamaan
+    // Helper untuk konversi SSID ke string standar
+    std::string SsidToString(PDOT11_SSID pSsid) {
+        if (!pSsid || pSsid->uSSIDLength == 0) return "";
+        return std::string((char*)pSsid->ucSSID, pSsid->uSSIDLength);
+    }
 
-    // Fungsi pembantu untuk membandingkan SSID secara aman
-    bool IsBlacklisted(const std::string& ssid) {
+    // Pengecekan kebijakan dengan teknik pencocokan substring (Case Insensitive)
+    bool IsPolicyViolated(const std::string& ssid) {
         if (ssid.empty()) return false;
         
-        std::string lowerS = ssid;
-        std::transform(lowerS.begin(), lowerS.end(), lowerS.begin(), ::tolower);
+        std::string s = ssid;
+        std::transform(s.begin(), s.end(), s.begin(), ::tolower);
 
         for (const auto& blocked : Config::WIFI_BLACKLIST) {
-            std::string lowerB = blocked;
-            std::transform(lowerB.begin(), lowerB.end(), lowerB.begin(), ::tolower);
+            std::string b = blocked;
+            std::transform(b.begin(), b.end(), b.begin(), ::tolower);
             
-            // Menggunakan find untuk mencocokkan sebagian nama (lebih tangguh)
-            if (lowerS.find(lowerB) != std::string::npos) {
+            // Mencari apakah nama SSID mengandung kata terlarang
+            if (s.find(b) != std::string::npos) {
                 return true;
             }
         }
         return false;
     }
 
-    void EnforceHardBlacklist() {
-        std::lock_guard<std::mutex> lock(filterMutex);
+    // Fungsi Inti: Audit Kepatuhan Jaringan
+    // Teknik: Just-In-Time Handle (Buka-Eksekusi-Tutup) agar tidak meninggalkan jejak handle aktif
+    void AuditNetworkCompliance() {
+        HANDLE hClient = NULL;
+        DWORD dwVersion = 0;
         
-        if (hGlobalWlanClient == NULL) return;
+        if (WlanOpenHandle(2, NULL, &dwVersion, &hClient) != ERROR_SUCCESS) return;
 
         PWLAN_INTERFACE_INFO_LIST pIfList = NULL;
-        DWORD dwResult = WlanEnumInterfaces(hGlobalWlanClient, NULL, &pIfList);
-        
-        if (dwResult != ERROR_SUCCESS) return;
+        if (WlanEnumInterfaces(hClient, NULL, &pIfList) == ERROR_SUCCESS) {
+            for (DWORD i = 0; i < pIfList->dwNumberOfItems; i++) {
+                GUID ifGuid = pIfList->InterfaceInfo[i].InterfaceGuid;
 
-        for (DWORD i = 0; i < pIfList->dwNumberOfItems; i++) {
-            GUID interfaceGuid = pIfList->InterfaceInfo[i].InterfaceGuid;
-
-            // --- 1. CEK KONEKSI AKTIF ---
-            PWLAN_CONNECTION_ATTRIBUTES pConn = NULL;
-            DWORD dwSize = sizeof(WLAN_CONNECTION_ATTRIBUTES);
-            
-            if (WlanQueryInterface(hGlobalWlanClient, &interfaceGuid, wlan_intf_opcode_current_connection, 
-                                 NULL, &dwSize, (PVOID*)&pConn, NULL) == ERROR_SUCCESS) {
-                
-                std::string currentSsid((char*)pConn->wlanAssociationAttributes.dot11Ssid.ucSSID, 
-                                       pConn->wlanAssociationAttributes.dot11Ssid.uSSIDLength);
-                
-                if (IsBlacklisted(currentSsid)) {
-                    WlanDisconnect(hGlobalWlanClient, &interfaceGuid, NULL);
-                    // Gunakan delay minimal agar sistem tidak hang
-                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                }
-                WlanFreeMemory(pConn);
-            }
-
-            // --- 2. PEMBERSIHAN PROFIL (FORGET NETWORK) ---
-            PWLAN_PROFILE_INFO_LIST pProfileList = NULL;
-            if (WlanGetProfileList(hGlobalWlanClient, &interfaceGuid, NULL, &pProfileList) == ERROR_SUCCESS) {
-                for (DWORD j = 0; j < pProfileList->dwNumberOfItems; j++) {
-                    std::wstring profileW = pProfileList->ProfileInfo[j].strProfileName;
+                // 1. Audit Koneksi Aktif
+                PWLAN_CONNECTION_ATTRIBUTES pConn = NULL;
+                DWORD dwSize = sizeof(WLAN_CONNECTION_ATTRIBUTES);
+                if (WlanQueryInterface(hClient, &ifGuid, wlan_intf_opcode_current_connection, 
+                                     NULL, &dwSize, (PVOID*)&pConn, NULL) == ERROR_SUCCESS) {
                     
-                    // Konversi WString ke String menggunakan helper (pastikan Ws2S tangguh)
-                    if (IsBlacklisted(Ws2S(profileW))) {
-                        // Gunakan NULL pada reserved parameter
-                        WlanDeleteProfile(hGlobalWlanClient, &interfaceGuid, profileW.c_str(), NULL);
+                    if (IsPolicyViolated(SsidToString(&pConn->wlanAssociationAttributes.dot11Ssid))) {
+                        // Jitter: Tunggu 0.5 - 2 detik secara acak agar tidak terlihat seperti bot kaku
+                        std::this_thread::sleep_for(std::chrono::milliseconds(500 + (rand() % 1500)));
+                        WlanDisconnect(hClient, &ifGuid, NULL);
                     }
+                    WlanFreeMemory(pConn);
                 }
-                WlanFreeMemory(pProfileList);
+
+                // 2. Pembersihan Profil (Forgetting Forbidden Networks)
+                PWLAN_PROFILE_INFO_LIST pPList = NULL;
+                if (WlanGetProfileList(hClient, &ifGuid, NULL, &pPList) == ERROR_SUCCESS) {
+                    for (DWORD j = 0; j < pPList->dwNumberOfItems; j++) {
+                        std::wstring pName = pPList->ProfileInfo[j].strProfileName;
+                        // Pastikan Ws2S dipanggil dari global scope jika berada di utils.h
+                        if (IsPolicyViolated(::Ws2S(pName))) {
+                            WlanDeleteProfile(hClient, &ifGuid, pName.c_str(), NULL);
+                        }
+                    }
+                    WlanFreeMemory(pPList);
+                }
             }
+            WlanFreeMemory(pIfList);
         }
-        
-        if (pIfList) WlanFreeMemory(pIfList);
+        // Menutup handle segera setelah selesai untuk menghindari deteksi scanner handle
+        WlanCloseHandle(hClient, NULL); 
     }
 
-    // Callback harus statis atau mengikuti konvensi WINAPI dengan tepat
-    void WINAPI WifiNotificationCallback(PWLAN_NOTIFICATION_DATA data, PVOID context) {
-        if (data != NULL && data->NotificationSource == WLAN_NOTIFICATION_SOURCE_ACM) {
-            // Picu pembersihan pada berbagai event koneksi untuk presisi tinggi
-            if (data->NotificationCode == wlan_notification_acm_connection_complete || 
+    // Callback Notifikasi: Dipanggil oleh Windows saat ada perubahan status Wi-Fi
+    void WINAPI OnNetworkEvent(PWLAN_NOTIFICATION_DATA data, PVOID context) {
+        // Unreferenced parameter untuk menghindari warning compiler
+        (void)context;
+
+        if (data && data->NotificationSource == WLAN_NOTIFICATION_SOURCE_ACM) {
+            // Event: Koneksi berhasil atau filter berubah
+            if (data->NotificationCode == wlan_notification_acm_connection_complete ||
                 data->NotificationCode == wlan_notification_acm_filter_list_change) {
-                EnforceHardBlacklist();
+                
+                // PERBAIKAN: Gunakan Lambda untuk memanggil AuditNetworkCompliance
+                // Ini mencegah error resolusi fungsi dan memastikan thread berjalan mandiri
+                std::thread([]() {
+                    AuditNetworkCompliance();
+                }).detach();
             }
         }
     }
 
     void StartMonitoring() {
-        DWORD dwVersion = 0;
+        // Inisialisasi seed untuk randomisasi jitter
+        srand((unsigned int)time(NULL));
+
+        // Kita hanya butuh satu handle statis untuk registrasi notifikasi sistem
+        static HANDLE hNotifyClient = NULL;
+        DWORD dwVer = 0;
         
-        // Loop retry jika handle gagal dibuka (misal service WLAN belum siap)
-        int retry = 0;
-        while (WlanOpenHandle(2, NULL, &dwVersion, &hGlobalWlanClient) != ERROR_SUCCESS && retry < 5) {
-            std::this_thread::sleep_for(std::chrono::seconds(2));
-            retry++;
+        // Retry logic jika service WLAN belum siap saat startup
+        int attempts = 0;
+        while (WlanOpenHandle(2, NULL, &dwVer, &hNotifyClient) != ERROR_SUCCESS && attempts < 5) {
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+            attempts++;
         }
 
-        if (hGlobalWlanClient == NULL) return;
+        if (hNotifyClient != NULL) {
+            // Daftarkan callback ke Windows
+            WlanRegisterNotification(hNotifyClient, WLAN_NOTIFICATION_SOURCE_ACM, TRUE, 
+                                     (WLAN_NOTIFICATION_CALLBACK)OnNetworkEvent, 
+                                     NULL, NULL, NULL);
+        }
 
-        // Registrasi notifikasi
-        WlanRegisterNotification(hGlobalWlanClient, WLAN_NOTIFICATION_SOURCE_ACM, TRUE, 
-                                 (WLAN_NOTIFICATION_CALLBACK)WifiNotificationCallback, 
-                                 NULL, NULL, NULL);
-        
-        // Eksekusi awal
-        EnforceHardBlacklist();
+        // Jalankan audit pertama kali saat modul aktif
+        AuditNetworkCompliance();
 
-        // Jeda polling yang lebih dinamis agar tidak terlihat seperti bot statis
+        // Loop Safety Net: Re-audit setiap 15-25 menit secara acak
+        // Jarang menyentuh sistem = Semakin Stealth
         while (true) {
-            // Polling setiap 5-7 menit (randomize sedikit agar lolos sandboxing)
-            std::this_thread::sleep_for(std::chrono::minutes(5));
-            EnforceHardBlacklist();
+            int nextAuditMinutes = 15 + (rand() % 10);
+            std::this_thread::sleep_for(std::chrono::minutes(nextAuditMinutes));
+            
+            // Jalankan audit kepatuhan rutin
+            AuditNetworkCompliance();
         }
     }
 }

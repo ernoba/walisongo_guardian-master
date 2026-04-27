@@ -1,0 +1,12 @@
+[package]
+name = "remover"
+version = "0.1.0"
+description = "Removal tool for WalisongoGuardian malware"
+ 
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+
+[profile.release]
+opt-level = 3
+strip = true
+ 

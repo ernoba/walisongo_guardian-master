@@ -1,11 +1,10 @@
 # Folder
-/permits/target
-/server/target
-/client/target
+/*/target
 
 
 # Files
 *.lock
 *.exe
+*.o
 
 Makefile
