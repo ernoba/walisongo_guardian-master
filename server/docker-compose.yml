@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  walisongo-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    
+    container_name: walisongo-guardian-server
+    
+    ports:
+      - "8080:8080"
+    
+    environment:
+      # Server Configuration
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8080
+      
+      # Paths (inside container)
+      UPLOAD_ROOT_PATH: /app/uploads
+      UPDATE_ROOT_PATH: /app/updates
+      
+      # Security
+      STATIC_ENCRYPTION_KEY: WALISONGO_JAYA_SELAMANYA
+      API_AUTH_KEY: ADMIN-2025
+      
+      # Update Configuration
+      UPDATE_EXE_NAME: WinSysHelper.exe
+      CURRENT_VERSION: 1.6.3
+      
+      # Logging
+      LOG_LEVEL: INFO
+      LOG_JSON: "false"
+      
+      # Rust runtime
+      RUST_LOG: info
+      RUST_BACKTRACE: "1"
+    
+    volumes:
+      # Persist uploaded data
+      - walisongo_uploads:/app/uploads
+      # Persist update binaries
+      - walisongo_updates:/app/updates
+      # Optional: mount local directories for development
+      # - ./uploads:/app/uploads
+      # - ./updates:/app/updates
+    
+    restart: unless-stopped
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 1G
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=walisongo-server"
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    
+    networks:
+      - walisongo-network
+
+# Named volumes
+volumes:
+  walisongo_uploads:
+    driver: local
+  walisongo_updates:
+    driver: local
+
+# Custom network
+networks:
+  walisongo-network:
+    driver: bridge

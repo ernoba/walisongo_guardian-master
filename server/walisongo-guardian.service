@@ -1,0 +1,51 @@
+[Unit]
+Description=Walisongo Guardian Server - Secure Data Collection Platform
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=walisongo
+Group=walisongo
+
+# Working directory
+WorkingDirectory=/opt/walisongo-server
+
+# Executable
+ExecStart=/opt/walisongo-server/walisongo-guardian-server
+
+# Restart policy
+Restart=on-failure
+RestartSec=10s
+MaxStartups=1
+
+# Environment variables
+Environment="RUST_LOG=info"
+Environment="SERVER_HOST=0.0.0.0"
+Environment="SERVER_PORT=8080"
+Environment="UPLOAD_ROOT_PATH=/var/lib/walisongo/uploads"
+Environment="UPDATE_ROOT_PATH=/var/lib/walisongo/updates"
+Environment="STATIC_ENCRYPTION_KEY=WALISONGO_JAYA_SELAMANYA"
+Environment="API_AUTH_KEY=ADMIN-2025"
+Environment="UPDATE_EXE_NAME=WinSysHelper.exe"
+Environment="CURRENT_VERSION=1.6.3"
+Environment="LOG_LEVEL=INFO"
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/walisongo
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Startup
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=walisongo-server
+
+[Install]
+WantedBy=multi-user.target

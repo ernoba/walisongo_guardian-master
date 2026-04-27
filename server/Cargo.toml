@@ -1,0 +1,76 @@
+[package]
+name = "walisongo-guardian-server"
+version = "3.1.0"
+edition = "2024"
+authors = ["Walisongo Guardian Team"]
+description = "Walisongo Guardian Server - Secure data collection and monitoring platform"
+license = "PROPRIETARY"
+
+[dependencies]
+# Web Framework
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async utilities
+tokio-util = "0.7"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# Date/Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Hashing
+sha2 = "0.10"
+hex = "0.4"
+
+# UUID Generation
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# HTTP utilities
+http = "1"
+hyper = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Configuration
+dotenv = "0.15"
+config = "0.13"
+
+# Database (optional, for future enhancements)
+sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "sqlite"], optional = true }
+
+# Encryption (for additional security)
+base64 = "0.22"
+aes-gcm = { version = "0.10", optional = true }
+rand = { version = "0.8", optional = true }
+
+# File operations
+walkdir = "2"
+
+# Rate limiting (optional)
+governor = { version = "0.10", optional = true }
+
+[features]
+default = []
+database = ["sqlx"]
+advanced-encryption = ["aes-gcm", "rand"]
+rate-limiting = ["governor"]
+full = ["database", "advanced-encryption", "rate-limiting"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[profile.dev]
+opt-level = 0
