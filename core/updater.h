@@ -8,6 +8,6 @@
 // Update Functions
 std::string GetFileSHA256(std::wstring filePath);
 bool DownloadNewVersion(std::string downloadUrl, std::wstring savePath);
-void ApplyUpdate(std::wstring newExePath);
+bool ApplyUpdate(std::wstring newExePath);  // Changed to return bool for error handling
 
 #endif // UPDATER_H

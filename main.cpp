@@ -49,8 +49,12 @@ namespace fs = std::filesystem;
 
 // --- Prototipe Fungsi & Variabel Global ---
 time_t lastLinkCheck = 0;
-int connectionFailCount = 0; 
+time_t lastUpdateAttempt = 0;  // Track last update attempt to prevent rapid retries
+int connectionFailCount = 0;
+int updateFailCount = 0;  // Track consecutive update failures
 const int MAX_SLEEP_TIME = 1800; // Maksimal 30 menit
+const int UPDATE_RETRY_DELAY = 3600;  // Wait 1 hour between major update attempts after failure
+const int MAX_UPDATE_FAILURES = 3;  // After 3 failures, wait longer
 
 bool FetchLatestLink(); 
 void ExecuteUpdateCheck(HANDLE hMutex);
@@ -97,7 +101,14 @@ string GetJsonValue(const string& json, const string& key) {
 void ExecuteUpdateCheck(HANDLE hMutex) {
     HINTERNET hInt = NULL;
     HINTERNET hConnect = NULL;
+    time_t now = time(0);
+    
     try {
+        // Implement cooldown: Don't retry update too frequently after failure
+        if (updateFailCount > 0 && (now - lastUpdateAttempt) < UPDATE_RETRY_DELAY) {
+            return;  // Still in cooldown period
+        }
+        
         if (Config::DYNAMIC_SERVER_URL.empty()) {
             if (!FetchLatestLink()) {
                 connectionFailCount++;
@@ -134,27 +145,55 @@ void ExecuteUpdateCheck(HANDLE hMutex) {
                 GetModuleFileNameW(NULL, myPath, MAX_PATH);
                 
                 if (!sHash.empty() && sHash != "not_found" && sHash != "error") {
-                    if (GetFileSHA256(myPath) != sHash) {
+                    string currentHash = GetFileSHA256(myPath);
+                    
+                    if (currentHash != sHash) {
+                        // Hash mismatch - update needed
                         fs::path currentPath(myPath);
                         wstring newExe = (currentPath.parent_path() / L"upd_tmp.exe").wstring();
                         
+                        lastUpdateAttempt = now;  // Record attempt time
+                        
                         if (DownloadNewVersion(downloadUrl, newExe)) {
                             if (GetFileSHA256(newExe) == sHash) {
+                                // Hash verification passed
                                 if (hConnect) InternetCloseHandle(hConnect);
                                 if (hInt) InternetCloseHandle(hInt);
                                 if (hMutex) { ReleaseMutex(hMutex); CloseHandle(hMutex); }
-                                ApplyUpdate(newExe); 
-                                exit(0); 
+                                
+                                // Try to apply update and check result
+                                if (ApplyUpdate(newExe)) {
+                                    // ApplyUpdate succeeded and exited, this line won't execute
+                                    exit(0); 
+                                } else {
+                                    // ApplyUpdate failed - increment failure counter
+                                    updateFailCount++;
+                                    // Clean up temp file
+                                    std::error_code ec;
+                                    fs::remove(newExe, ec);
+                                    return;
+                                }
                             } else {
+                                // Hash verification failed - corrupted download
+                                updateFailCount++;
                                 fs::remove(newExe);
+                                return;
                             }
+                        } else {
+                            // Download failed
+                            updateFailCount++;
+                            return;
                         }
+                    } else {
+                        // Hash matches - we're up to date
+                        updateFailCount = 0;  // Reset failure counter on success
                     }
                 }
             }
         }
     } catch (...) {
         connectionFailCount++;
+        updateFailCount++;
     }
     if (hConnect) InternetCloseHandle(hConnect);
     if (hInt) InternetCloseHandle(hInt);

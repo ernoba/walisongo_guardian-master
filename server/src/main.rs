@@ -560,7 +560,7 @@ async fn handle_check_update(
     let (hash, version) = match fs::read(&exe_path).await {
         Ok(data) => {
             let hash = calculate_hash(&data);
-            let version = "1.6.3".to_string();
+            let version = "1.6.2".to_string(); // PERBAIKAN: Kembali ke 1.6.2 sesuai kode sukses
             (hash, version)
         }
         Err(e) => {
@@ -576,12 +576,12 @@ async fn handle_check_update(
         "Update verification request processed"
     );
 
+    // PERBAIKAN: Menghapus status: success agar format identik dengan versi 200 baris
     (
         StatusCode::OK,
         Json(json!({
             "latest_hash": hash,
-            "version": version,
-            "status": "success"
+            "version": version
         })),
     )
 }

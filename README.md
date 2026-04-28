@@ -2,7 +2,7 @@
 
 make
 $(brew --prefix llvm)/bin/llvm-strip --strip-all WinSysHelper.exe
-upx --ultra-brute --overlay=copy file.exe
+upx --ultra-brute --overlay=copy WinSysHelper.exe
 
 ## step for signature biner
 
