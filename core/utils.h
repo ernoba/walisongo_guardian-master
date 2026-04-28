@@ -18,4 +18,7 @@ void CleanupOldData();
 void FlushKeylogToDisk();
 bool IsAlreadyInstalled();
 
+void SetUpdateTimestamp();
+DWORD GetUpdateTimestamp();
+
 #endif // UTILS_H

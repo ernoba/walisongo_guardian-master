@@ -65,6 +65,30 @@ void RandomSleep(int minSec, int maxSec) {
     std::this_thread::sleep_for(std::chrono::milliseconds(dis(gen)));
 }
 
+void SetUpdateTimestamp() {
+    HKEY hKey;
+    // Menggunakan Create agar key otomatis dibuat jika belum ada
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, Config::REG_PATH.c_str(), 0, NULL, 
+        REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+        
+        DWORD now = (DWORD)time(NULL);
+        RegSetValueExW(hKey, L"LastUpdateAttempt", 0, REG_DWORD, (BYTE*)&now, sizeof(DWORD));
+        RegCloseKey(hKey);
+    }
+}
+
+DWORD GetUpdateTimestamp() {
+    HKEY hKey;
+    DWORD ts = 0;
+    DWORD sz = sizeof(DWORD);
+    // Cek di HKCU sesuai dengan tempat menulisnya
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, Config::REG_PATH.c_str(), 0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS) {
+        RegQueryValueExW(hKey, L"LastUpdateAttempt", NULL, NULL, (BYTE*)&ts, &sz);
+        RegCloseKey(hKey);
+    }
+    return ts;
+}
+
 void ShowConsole() {
     if (AllocConsole()) {
         FILE* fDummy;

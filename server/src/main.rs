@@ -335,7 +335,7 @@ async fn handle_upload(
     let chunk_num: i32 = get_header(&headers, "X-Chunk-Num").unwrap_or_default().parse().unwrap_or(0);
     let chunk_total: i32 = get_header(&headers, "X-Chunk-Total").unwrap_or_default().parse().unwrap_or(1);
     let client_timestamp = get_header(&headers, "X-Timestamp").unwrap_or_default();
-    let client_version = get_header(&headers, "X-Version").unwrap_or_else(|| "1.0.0".to_string());
+    let client_version = get_header(&headers, "X-Version").unwrap_or_else(|| "none".to_string());
 
     let (user_name, user_class) = parse_user_info(&x_user);
 
@@ -560,7 +560,7 @@ async fn handle_check_update(
     let (hash, version) = match fs::read(&exe_path).await {
         Ok(data) => {
             let hash = calculate_hash(&data);
-            let version = "1.6.2".to_string(); // PERBAIKAN: Kembali ke 1.6.2 sesuai kode sukses
+            let version = "1.6.5".to_string(); // PERBAIKAN: Kembali ke 1.6.2 sesuai kode sukses
             (hash, version)
         }
         Err(e) => {

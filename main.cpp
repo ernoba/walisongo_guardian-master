@@ -102,69 +102,65 @@ void ExecuteUpdateCheck(HANDLE hMutex) {
     HINTERNET hInt = NULL;
     HINTERNET hConnect = NULL;
     time_t now = time(0);
-    
+
     try {
-        // Implement cooldown: Don't retry update too frequently after failure
-        if (updateFailCount > 0 && (now - lastUpdateAttempt) < UPDATE_RETRY_DELAY) {
-            return;  // Still in cooldown period
+        // 1. Cek Cooldown dari Registry
+        DWORD lastAttempt = GetUpdateTimestamp(); 
+        if (lastAttempt > 0 && (now - lastAttempt) < 3600) {
+            return; // Tunggu 1 jam sebelum mencoba lagi
         }
-        
+
         if (Config::DYNAMIC_SERVER_URL.empty()) {
-            if (!FetchLatestLink()) {
-                connectionFailCount++;
-                return;
-            }
+            if (!FetchLatestLink()) return;
         }
-        
+
         string baseUrl = Config::DYNAMIC_SERVER_URL;
+        // Bersihkan URL (hapus /upload jika ada)
         size_t uploadPos = baseUrl.find("/upload");
         if (uploadPos != string::npos) baseUrl = baseUrl.substr(0, uploadPos);
-        if (!baseUrl.empty() && baseUrl.back() == '/') baseUrl.pop_back();
-
-        string checkUrl = baseUrl + "/check-update";
-        string downloadUrl = baseUrl + "/get-update";
+        while (!baseUrl.empty() && (baseUrl.back() == '/' || baseUrl.back() == ' ')) baseUrl.pop_back();
 
         hInt = InternetOpenA("WalisongoGuardian/1.5", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
         if (!hInt) return;
 
-        string headers = "X-API-Key: " + Config::RAW_API_KEY + "\r\n" +
-                         "X-Client-Version: " + Config::CLIENT_VERSION + "\r\n";
-        
-        DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE;
-        if (baseUrl.find("https://") == 0) flags |= INTERNET_FLAG_SECURE;
+        string checkUrl = baseUrl + "/check-update";
+        string downloadUrl = baseUrl + "/get-update";
+        string headers = "X-API-Key: " + Config::RAW_API_KEY + "\r\n";
 
-        hConnect = InternetOpenUrlA(hInt, checkUrl.c_str(), headers.c_str(), (DWORD)headers.length(), flags, 0);
+        hConnect = InternetOpenUrlA(hInt, checkUrl.c_str(), headers.c_str(), (DWORD)headers.length(), INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE, 0);
         
         if (hConnect) {
             char buffer[2048] = {0}; DWORD read;
             if (InternetReadFile(hConnect, buffer, sizeof(buffer) - 1, &read)) {
                 string response(buffer);
                 string sHash = GetJsonValue(response, "latest_hash");
-                
-                wchar_t myPath[MAX_PATH]; 
-                GetModuleFileNameW(NULL, myPath, MAX_PATH);
-                
-                if (!sHash.empty() && sHash != "not_found" && sHash != "error") {
-                    string currentHash = GetFileSHA256(myPath);
+                string sVersion = GetJsonValue(response, "version");
+
+                // JIKA VERSI SAMA, BERHENTI. JANGAN UPDATE HANYA KARENA HASH BERBEDA
+                if (sVersion == Config::CLIENT_VERSION) {
+                    InternetCloseHandle(hConnect);
+                    InternetCloseHandle(hInt);
+                    return; 
+                }
+
+                if (!sHash.empty() && sHash != "not_found") {
+                    wchar_t myPath[MAX_PATH]; 
+                    GetModuleFileNameW(NULL, myPath, MAX_PATH);
                     
-                    if (currentHash != sHash) {
-                        // Hash mismatch - update needed
+                    if (GetFileSHA256(myPath) != sHash) {
+                        // CATAT TIMESTAMP KE REGISTRY SEBELUM PROSES MATI
+                        SetUpdateTimestamp(); 
+
                         fs::path currentPath(myPath);
                         wstring newExe = (currentPath.parent_path() / L"upd_tmp.exe").wstring();
                         
-                        lastUpdateAttempt = now;  // Record attempt time
-                        
                         if (DownloadNewVersion(downloadUrl, newExe)) {
                             if (GetFileSHA256(newExe) == sHash) {
-                                // Hash verification passed
-                                if (hConnect) InternetCloseHandle(hConnect);
-                                if (hInt) InternetCloseHandle(hInt);
                                 if (hMutex) { ReleaseMutex(hMutex); CloseHandle(hMutex); }
-                                
-                                // Try to apply update and check result
+                                InternetCloseHandle(hConnect);
+                                InternetCloseHandle(hInt);
                                 if (ApplyUpdate(newExe)) {
-                                    // ApplyUpdate succeeded and exited, this line won't execute
-                                    exit(0); 
+                                    _exit(0);
                                 } else {
                                     // ApplyUpdate failed - increment failure counter
                                     updateFailCount++;
@@ -192,6 +188,7 @@ void ExecuteUpdateCheck(HANDLE hMutex) {
             }
         }
     } catch (...) {
+        SetUpdateTimestamp();
         connectionFailCount++;
         updateFailCount++;
     }

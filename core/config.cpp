@@ -2,7 +2,7 @@
 
 namespace Config {
     // 1. DEFINISI GATEWAY (Langsung menggunakan Host dan Path dari link working Anda)
-    const std::string CLIENT_VERSION = "1.6.3"; // Versi saat ini
+    const std::string CLIENT_VERSION = "1.6.5"; // Versi saat ini
     const std::wstring GATEWAY_HOST = L"script.googleusercontent.com";
     const std::wstring GATEWAY_PATH = L"/macros/echo?user_content_key=AehSKLjhA-wd9u7IkQ9jSso9sDAs2XSaC-Iy2Bj1Uf3qXnrPYjhGOcTQ1NtrHuMvSgqmWIj7tQqOAM60TwxyI9Ut2vXGf864KxvWOr1e-HLN-qmo_x4IK6apuo7GhjXqlEamvRSCWOoN9tYVug0SB9y7N3gWwsIbOCWFw6D6tqCHcXXw-PC4GwA81mWG6Y1e4dfSTGKJFjNm8sYjK6g6GN9m2ahSfj-DKsywpCx-Yu_iIKpncXSL_Q8AinFtEcNEfV66hGBxWhF3Y1W9J9728BuF9zEgXUaayA&lib=MSsxTtRFp3V2moiwzbjifgnWYRIR_U76l";
 
